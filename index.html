@@ -341,6 +341,12 @@
         return session.stock !== null && session.stock.role === 'OWNER'
       }
 
+      /**
+       * 首頁只放按鍵，不列庫存（使用者要求：庫存另外一頁）。
+       *
+       * 首頁仍然呼叫一次 stock：它同時是「你是誰、你的角色」「有幾張單在等複核」
+       * 「進貨表單可以選哪些商品、哪些單位」的來源。一次呼叫約 2 秒，不再多打一次。
+       */
       function goHome() {
         var t = begin()
         form = null
@@ -348,13 +354,13 @@
         call('stock').then(function (r) {
           if (!current(t)) return
           log({ step: 'stock', ok: r.ok, code: r.code, timing: r.timing })
-          if (r.ok) return showStock(r)
+          if (r.ok) return showHome(r)
           if (handledAuth(r)) return
           return showError(messageFor(r.code))
         }).catch(netFailed(t, '連不到店裡的系統。請確認網路之後按「重新整理」。', [reloadButton()]))
       }
 
-      function showStock(r) {
+      function showHome(r) {
         clearTimeout(watchdog)
         session.stock = r
         var owner = r.role === 'OWNER'
@@ -368,8 +374,35 @@
           ]))
         }
 
-        parts.push(button('進貨', function () { openPurchase() }))
-        parts.push(button(owner ? '待複核' : '我送出的單', function () { openList() }))
+        parts.push(button('進貨', function () { openPurchase() }, 'wide'))
+        parts.push(button('庫存', function () { openStock() }, 'wide'))
+        parts.push(button(owner ? '待複核' : '我送出的單', function () { openList() }, 'wide'))
+        parts.push(el('div', { text: '' }))
+        parts.push(reloadButton())
+        render(parts)
+      }
+
+      /**
+       * 庫存清單。**每次打開都重新向後端要**，不用首頁那一份：老闆剛按完「通過」
+       * 回來看，數字要是新的。
+       */
+      function openStock() {
+        var t = begin()
+        showLoading()
+        call('stock').then(function (r) {
+          if (!current(t)) return
+          log({ step: 'stock-page', ok: r.ok, code: r.code, timing: r.timing })
+          if (r.ok) return showStock(r)
+          if (handledAuth(r)) return
+          return showError(messageFor(r.code), [button('再試一次', function () { openStock() }), homeButton()])
+        }).catch(netFailed(t, '連不到店裡的系統。請確認網路之後再試一次。', [button('再試一次', function () { openStock() }), homeButton()]))
+      }
+
+      function showStock(r) {
+        clearTimeout(watchdog)
+        session.stock = r
+        var owner = r.role === 'OWNER'
+        var parts = [el('h2', { text: '庫存' })]
 
         parts.push(el('h2', { text: '每一種茶' }))
         if (r.items.length === 0) {
@@ -410,7 +443,8 @@
         })
 
         parts.push(el('div', { text: '' }))
-        parts.push(reloadButton())
+        parts.push(homeButton())
+        parts.push(button('重新整理', function () { openStock() }))
         render(parts)
       }
 
