@@ -33,6 +33,7 @@
     p { margin: 0 0 12px; }
     .muted { color: var(--muted); }
     .bad { color: var(--bad); font-weight: bold; }
+    .good { color: var(--ok); font-weight: bold; }
     .box { border: 2px solid var(--line); padding: 12px; margin-bottom: 16px; }
     .num { font-size: var(--number-font-size); font-weight: bold; }
     .uid {
@@ -45,6 +46,7 @@
     .item:last-child { border-bottom: none; }
     .item-name { font-weight: bold; }
     .bin { font-size: 20px; font-weight: bold; margin: 16px 0 4px; }
+    button, input, select, textarea { box-sizing: border-box; font-family: inherit; }
     button {
       min-height: var(--tap-target);
       min-width: var(--tap-target);
@@ -56,6 +58,28 @@
       color: var(--ink);
       border: 2px solid var(--ink);
     }
+    button.primary { background: var(--ink); color: var(--paper); font-weight: bold; }
+    button:disabled { opacity: 0.6; }
+    /* 整列寬的按鍵（清單上的每一張單）。右邊不留間距，不然 375px 寬會多出水平捲動 */
+    button.wide { display: block; width: 100%; margin-right: 0; padding: 12px; text-align: left; }
+    label { display: block; font-weight: bold; margin: 12px 0 4px; }
+    input, select, textarea {
+      display: block;
+      width: 100%;
+      min-height: var(--tap-target);
+      font-size: var(--body-font-size);
+      padding: 8px 12px;
+      margin: 0 0 var(--tap-gap);
+      border: 2px solid var(--ink);
+      background: var(--paper);
+      color: var(--ink);
+    }
+    input.num-input { font-size: var(--number-font-size); }
+    textarea { min-height: 120px; }
+    /* 數量跟單位放同一列：數字在左、單位在右，中間留 12px */
+    .pair { display: flex; gap: var(--tap-gap); }
+    .pair > input { flex: 1 1 auto; min-width: 0; }
+    .pair > select { flex: 0 0 40%; }
     pre { font-size: 14px; white-space: pre-wrap; background: #f3f3f3; padding: 8px; margin: 0; }
   </style>
 </head>
@@ -83,6 +107,8 @@
       var WATCHDOG_MS = 15000
       // 一次後端呼叫實測約 2 秒（設計文件 §9.3），20 秒是很寬的上限。
       var FETCH_TIMEOUT_MS = 20000
+      // 一張單最多幾行（規格 §3.3）。後端會再擋一次
+      var MAX_LINES = 10
 
       var diag = { t0: Date.now(), events: [] }
       function log(ev) {
@@ -92,6 +118,9 @@
       }
 
       // ---- 畫面工具：一律用 textContent / createElement，禁止 innerHTML（§5.5）----
+      //
+      // 商品名、退回原因、姓名都是從試算表來的字，老闆或店長打什麼就是什麼（F19）。
+      // 用 textContent 放進去，<img onerror> 之類的字只會被當成字顯示。
 
       function el(tag, opts, children) {
         var node = document.createElement(tag)
@@ -101,20 +130,39 @@
         return node
       }
 
+      /** 一顆按鈕。字要跟實際去處一致（規格 §6）。 */
+      function button(text, onClick, cls) {
+        var b = el('button', { text: text, cls: cls })
+        b.type = 'button'
+        b.addEventListener('click', onClick)
+        return b
+      }
+
+      // 每一次換畫面都換一張「票」。慢回來的回應如果票已經過期（使用者已經去了
+      // 別的畫面、或看門狗已經接手），就丟掉，不可以把畫面蓋回去。
+      var view = 0
+      function begin() { view++; return view }
+      function current(ticket) { return ticket === view }
+
       var watchdog = null
-      function armWatchdog() {
+      /** onTimeout 沒給的話，就是通用的「好像卡住了」錯誤畫面。 */
+      function armWatchdog(onTimeout) {
         clearTimeout(watchdog)
         watchdog = setTimeout(function () {
           log({ step: 'watchdog' })
+          if (onTimeout) return onTimeout()
+          begin()
           showError('等太久了，好像卡住了。請按「重新整理」；還是不行的話，把這個畫面關掉再從選單打開。')
         }, WATCHDOG_MS)
       }
 
-      function render(children) {
+      /** keepScroll：表單裡改了商品、加減一行時重畫，不可以把他正在填的第 5 行捲走。 */
+      function render(children, keepScroll) {
         var app = document.getElementById('app')
         while (app.firstChild) app.removeChild(app.firstChild)
         app.appendChild(el('h1', { text: '柏雲茶帳本' }))
         children.forEach(function (c) { if (c) app.appendChild(c) })
+        if (!keepScroll) window.scrollTo(0, 0)
       }
 
       /**
@@ -125,13 +173,36 @@
        * 按了等於沒按，永遠拿到同一個錯誤。
        */
       function reloadButton() {
-        var b = el('button', { text: '重新整理' })
-        b.type = 'button'
-        b.addEventListener('click', function () {
+        return button('重新整理', function () {
           try { sessionStorage.removeItem('poyuntea-reloaded-at') } catch (e) {}
-          location.reload()
+          reopenFresh()
         })
-        return b
+      }
+
+      /**
+       * 「重新打開」一律走 LIFF 連結，**不用 location.reload()**。
+       *
+       * 實機（2026-09-29）：開著超過一小時後憑證過期，畫面裡的重新整理怎麼按都進
+       * 不去，按 X 關掉再從聊天室點連結就好了。原因：LINE 只有在「從 liff.line.me
+       * 連結打開」時才發新的登入憑證，並放在網址 # 後面；location.reload() 重新整理
+       * 的是**同一個網址**，帶的還是那張過期的舊憑證。
+       *
+       * 走連結等於替使用者做「關掉再從連結打開」。只保留白名單內的 ?to=，
+       * 其他參數一律不帶（網址是公開的，不可以讓它帶進任何東西）。
+       * 用 replace 不用 assign：上一頁不會回到那個過期的畫面。
+       */
+      function reopenFresh() {
+        var to = new URLSearchParams(location.search).get('to')
+        var qs = /^[a-z]{1,20}$/.test(to || '') ? '?to=' + to : ''
+        navigateTo('https://liff.line.me/' + LIFF_ID + qs)
+      }
+
+      function navigateTo(url) {
+        location.replace(url)
+      }
+
+      function homeButton(text) {
+        return button(text || '回首頁', function () { goHome() })
       }
 
       /** 讀取中的畫面沒有按鈕，所以**一定要有看門狗**：卡住的話 15 秒後換成錯誤畫面。 */
@@ -141,9 +212,9 @@
       }
 
       /** 每一種失敗都要講人話，而且**一定留一顆可以按的按鈕** —— 不可以是死路。 */
-      function showError(message) {
+      function showError(message, buttons) {
         clearTimeout(watchdog)
-        render([el('div', { cls: 'box' }, [el('p', { cls: 'bad', text: message })]), reloadButton()])
+        render([el('div', { cls: 'box' }, [el('p', { cls: 'bad', text: message })])].concat(buttons || [reloadButton()]))
       }
 
       // ---- 錯誤代碼 → 給人看的話（每個代碼對應唯一一種處置，見 gas/auth.gs）----
@@ -153,10 +224,37 @@
         A4: '暫時連不到 LINE，請等一下再按「重新整理」。',
         A6: '系統設定有誤（代碼 A6），請找開發人員。',
         S1: '試算表還沒準備好（代碼 S1），請找開發人員。',
+        S2: '試算表的欄位不齊（代碼 S2）。請老闆在 Apps Script 編輯器執行一次 setup，再回來重新整理。',
+        L1: '有人正在送單，請等幾秒再按一次。',
       }
 
       function messageFor(code) {
         return MESSAGES[code] || '系統出錯了（代碼 ' + code + '），請等一下再按「重新整理」。'
+      }
+
+      /**
+       * 後端的錯誤回應都帶一句固定的中文（見 gas/docs.gs，不含使用者輸入）。
+       * 有就用它 —— 它講得出是第幾行、下一步怎麼做；沒有才用代碼對照表。
+       */
+      function messageOf(r) {
+        if (r && typeof r.message === 'string' && r.message !== '' && r.message.length <= 200 && r.code !== 'E1') return r.message
+        return messageFor(r && r.code)
+      }
+
+      var TYPE_TEXT = { PURCHASE: '進貨單', SALE: '銷貨單', ADJUST: '盤點單', MOVE: '搬動單' }
+      var STATUS_TEXT = { PENDING: '等老闆複核', POSTED: '已通過', REJECTED: '已退回' }
+
+      /** 試算表來的代碼查表。用 hasOwnProperty：'constructor' 之類的字不可以查到原型上的東西。 */
+      function textOf(map, key) {
+        return Object.prototype.hasOwnProperty.call(map, key) ? map[key] : String(key)
+      }
+
+      /** ISO 時間 → 手機當地時間「9/29 14:30」。 */
+      function whenText(iso) {
+        var d = new Date(iso)
+        if (isNaN(d.getTime())) return String(iso || '')
+        var mm = String(d.getMinutes())
+        return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + d.getHours() + ':' + (mm.length < 2 ? '0' + mm : mm)
       }
 
       // ---- 使用者編號與複製（不在名單上時用） ----
@@ -212,12 +310,65 @@
         ])
       }
 
-      // ---- 查庫存 ----
+      /**
+       * 身分類的失敗，每個畫面都一樣處理。處理了回 true。
+       * A2（過期）自動重整一次；A3／A5 顯示編號。
+       */
+      function handledAuth(r) {
+        if (r.code === 'A2') { reloadOnce(); return true }
+        if (r.code === 'A3') { showNotAllowed(r.userId, false); return true }
+        if (r.code === 'A5') { showNotAllowed(r.userId, true); return true }
+        return false
+      }
+
+      /** 連線本身失敗（不是後端回錯誤）。 */
+      function netFailed(ticket, message, buttons) {
+        return function (err) {
+          if (!current(ticket)) return
+          log({ step: 'error', code: err && err.code, message: err && err.message })
+          if (err && err.code === 'NO_TOKEN') return reloadOnce()
+          showError(message || '連不到店裡的系統。請確認網路之後再試一次。', buttons || [homeButton(), reloadButton()])
+        }
+      }
+
+      // ---- 首頁：查庫存 ----
+
+      // 最近一次查庫存的結果。進貨表單的商品清單就從這裡來
+      var session = { stock: null }
+
+      function isOwner() {
+        return session.stock !== null && session.stock.role === 'OWNER'
+      }
+
+      function goHome() {
+        var t = begin()
+        form = null
+        showLoading()
+        call('stock').then(function (r) {
+          if (!current(t)) return
+          log({ step: 'stock', ok: r.ok, code: r.code, timing: r.timing })
+          if (r.ok) return showStock(r)
+          if (handledAuth(r)) return
+          return showError(messageFor(r.code))
+        }).catch(netFailed(t, '連不到店裡的系統。請確認網路之後按「重新整理」。', [reloadButton()]))
+      }
 
       function showStock(r) {
         clearTimeout(watchdog)
-        var isOwner = r.role === 'OWNER'
+        session.stock = r
+        var owner = r.role === 'OWNER'
         var parts = [el('p', { cls: 'muted', text: '你好，' + r.name })]
+
+        // 老闆一打開就要看到有沒有單在等他（這一片不做推播，用這個代替）
+        if (owner && r.pendingCount > 0) {
+          parts.push(el('div', { cls: 'box' }, [
+            el('p', { cls: 'num', text: '有 ' + r.pendingCount + ' 張單等你複核' }),
+            button('去複核', function () { openList() }, 'primary'),
+          ]))
+        }
+
+        parts.push(button('進貨', function () { openPurchase() }))
+        parts.push(button(owner ? '待複核' : '我送出的單', function () { openList() }))
 
         parts.push(el('h2', { text: '每一種茶' }))
         if (r.items.length === 0) {
@@ -226,14 +377,20 @@
         r.items.forEach(function (it) {
           var lines = [
             el('div', { cls: 'item-name', text: it.name }),
-            el('div', { cls: 'num', text: it.onBookText }),
+            // 帳上是 0 就講「沒有庫存」—— 「0 公克」讓人以為是一個真的量
+            el('div', { cls: 'num', text: it.isEmpty ? '沒有庫存' : it.onBookText }),
           ]
           // 可賣跟帳上不同時才講 —— 相同的話多一行只是讓人分心
           if (it.availableText !== it.onBookText) {
             lines.push(el('div', { text: '其中可以賣的：' + it.availableText + '（有單子還在等複核）' }))
           }
-          if (isOwner && it.avgCostText !== undefined) {
-            lines.push(el('div', { cls: 'muted', text: '平均成本：每' + it.quoteUnit + ' ' + it.avgCostText + ' 元' }))
+          if (owner) {
+            // 從來沒進過貨就講「還沒進貨」—— 「每台斤 0 元」會被當成真的價錢
+            if (it.hasCostHistory === false) {
+              lines.push(el('div', { cls: 'muted', text: '還沒進貨' }))
+            } else if (!it.isEmpty && it.avgCostText !== undefined) {
+              lines.push(el('div', { cls: 'muted', text: '平均成本：每' + it.quoteUnit + ' ' + it.avgCostText + ' 元' }))
+            }
           }
           parts.push(el('div', { cls: 'item' }, lines))
         })
@@ -256,22 +413,475 @@
         render(parts)
       }
 
+      // ---- 進貨 ----
+      //
+      // 表單的內容放在 form 物件裡，畫面每次都從它重畫：送出失敗、拿不到鎖、
+      // 連線斷掉時，內容都還在，他只要再按一次。
+
+      var form = null
+
+      /**
+       * 這一次要送的單的編號（F7）。後端用「建立者＋這個編號」認出重送：
+       * 回應沒收到、他再按一次，只會有一張單。
+       *
+       * **改了任何一格就換一個新的**：不然改過內容的重送會被認成舊單，
+       * 回來的是舊內容（成功畫面列的是後端實際存下的，他看得出來，但不該發生）。
+       */
+      function newRequestId() {
+        var bytes = new Uint8Array(16)
+        if (window.crypto && window.crypto.getRandomValues) {
+          window.crypto.getRandomValues(bytes)
+        } else {
+          // 很舊的瀏覽器才會走到這裡。這個編號只用來認「同一個人的同一張單」，
+          // 不是密碼；撞號的代價是一張單被當成重送，成功畫面會列出實際內容。
+          for (var i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256)
+        }
+        var s = ''
+        for (var j = 0; j < bytes.length; j++) s += String.fromCharCode(bytes[j])
+        return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+      }
+
+      function blankLine() {
+        return { code: '', bin: '', qty: '', unit: '', amount: '' }
+      }
+
+      function productOf(code) {
+        var items = session.stock ? session.stock.items : []
+        for (var i = 0; i < items.length; i++) if (items[i].code === code) return items[i]
+        return null
+      }
+
+      function openPurchase() {
+        begin()
+        clearTimeout(watchdog)
+        var items = session.stock ? session.stock.items : []
+        if (items.length === 0) {
+          return showError('還沒有任何商品可以進貨。請先在試算表的「商品」分頁加一列，再回來重新整理。', [homeButton(), reloadButton()])
+        }
+        form = { requestId: newRequestId(), lines: [blankLine()], sending: false, message: '', attempt: 0 }
+        renderForm()
+      }
+
+      /** 任何一格被改了。 */
+      function edited() {
+        form.requestId = newRequestId()
+      }
+
+      function lineBox(ln, i) {
+        var product = productOf(ln.code)
+        var locked = form.sending
+        var box = el('div', { cls: 'box' }, [el('p', { cls: 'item-name', text: '第 ' + (i + 1) + ' 行' })])
+
+        box.appendChild(el('label', { text: '商品' }))
+        var pick = el('select')
+        pick.appendChild(el('option', { text: '請選商品' }))
+        pick.options[0].value = ''
+        session.stock.items.forEach(function (it) {
+          var o = el('option', { text: it.name })
+          o.value = it.code
+          pick.appendChild(o)
+        })
+        pick.value = ln.code
+        pick.disabled = locked
+        pick.addEventListener('change', function () {
+          ln.code = pick.value
+          var p = productOf(ln.code)
+          var units = p ? p.purchaseUnits : []
+          ln.unit = units.indexOf('台斤') !== -1 ? '台斤' : (units[0] || '')
+          edited()
+          renderForm(true)   // 單位選單跟著商品變
+        })
+        box.appendChild(pick)
+
+        box.appendChild(el('label', { text: '放在哪一格' }))
+        var bin = el('input')
+        bin.type = 'text'
+        bin.placeholder = '例如 A-01'
+        bin.autocapitalize = 'characters'
+        bin.value = ln.bin
+        bin.disabled = locked
+        bin.addEventListener('input', function () { ln.bin = bin.value; edited() })
+        box.appendChild(bin)
+
+        box.appendChild(el('label', { text: '數量' }))
+        var qty = el('input', { cls: 'num-input' })
+        qty.type = 'text'
+        qty.inputMode = 'decimal'
+        qty.value = ln.qty
+        qty.disabled = locked
+        qty.addEventListener('input', function () { ln.qty = qty.value; edited() })
+        var unit = el('select')
+        ;(product ? product.purchaseUnits : ['先選商品']).forEach(function (u) {
+          var o = el('option', { text: u })
+          o.value = product ? u : ''
+          unit.appendChild(o)
+        })
+        unit.value = product ? ln.unit : ''
+        unit.disabled = locked || !product
+        unit.addEventListener('change', function () { ln.unit = unit.value; edited() })
+        box.appendChild(el('div', { cls: 'pair' }, [qty, unit]))
+
+        box.appendChild(el('label', { text: '這一行花了多少錢（元）' }))
+        var amount = el('input', { cls: 'num-input' })
+        amount.type = 'text'
+        amount.inputMode = 'decimal'
+        amount.placeholder = '沒花錢就填 0'
+        amount.value = ln.amount
+        amount.disabled = locked
+        amount.addEventListener('input', function () { ln.amount = amount.value; edited() })
+        box.appendChild(amount)
+
+        if (form.lines.length > 1) {
+          var del = button('刪掉這一行', function () {
+            if (form.sending) return
+            form.lines.splice(i, 1)
+            edited()
+            renderForm(true)
+          })
+          del.disabled = locked
+          box.appendChild(del)
+        }
+        return box
+      }
+
+      /** 錯誤訊息在最上面，所以有訊息時捲回頂端；其他重畫留在原位。 */
+      function renderForm(keepScroll) {
+        var parts = [
+          el('h2', { text: '進貨' }),
+          el('p', { cls: 'muted', text: '一張最多 ' + MAX_LINES + ' 行。送出之後要等老闆按「通過」，庫存才會加上去。' }),
+        ]
+        if (form.message) parts.push(el('div', { cls: 'box' }, [el('p', { cls: 'bad', text: form.message })]))
+        form.lines.forEach(function (ln, i) { parts.push(lineBox(ln, i)) })
+
+        if (form.lines.length < MAX_LINES) {
+          var more = button('再加一行', function () {
+            if (form.sending) return
+            form.lines.push(blankLine())
+            edited()
+            renderForm(true)
+          })
+          more.disabled = form.sending
+          parts.push(more)
+        }
+        var send = button(form.sending ? '送出中…' : '送出', submitPurchase, 'primary')
+        send.disabled = form.sending
+        parts.push(send)
+        parts.push(homeButton('回首頁（不送出）'))
+        render(parts, keepScroll)
+      }
+
+      /** 全形數字、全形小數點 → 半形。中文輸入法很容易打出全形。 */
+      function halfWidth(s) {
+        return String(s).replace(/[０-９]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0xfee0) })
+          .replace(/[．。]/g, '.').replace(/[，,]/g, '').trim()
+      }
+
+      var DECIMAL_2 = /^\d+(\.\d{1,2})?$/
+
+      /**
+       * 元 → 分。跟 core 的 yuanToFen **同一套規則**（15 位有效數字收掉浮點尾巴
+       * 再四捨五入），畫面上打的 12.3 元送出去一定是 1230 分。後端會再驗一次整數與範圍。
+       */
+      function yuanToFen(yuan) {
+        return Math.round(Number((yuan * 100).toPrecision(15)))
+      }
+
+      /** 送出前在手機上先擋明顯的錯（真正的規則在後端，這裡只是讓他少等一次）。 */
+      function checkForm() {
+        var out = []
+        for (var i = 0; i < form.lines.length; i++) {
+          var ln = form.lines[i]
+          var n = '第 ' + (i + 1) + ' 行：'
+          if (!productOf(ln.code)) return { message: n + '請選商品。' }
+          if (halfWidth(ln.bin) === '') return { message: n + '請填放在哪一格，例如 A-01。' }
+          var q = halfWidth(ln.qty)
+          if (!DECIMAL_2.test(q) || !(Number(q) > 0)) return { message: n + '數量要填大於零的數字，最多到小數兩位。' }
+          var a = halfWidth(ln.amount)
+          if (!DECIMAL_2.test(a)) return { message: n + '請填這一行花了多少錢（元），最多到小數兩位；沒花錢就填 0。' }
+          out.push({ productCode: ln.code, binCode: halfWidth(ln.bin), inputQty: Number(q), inputUnit: ln.unit, amountFen: yuanToFen(Number(a)) })
+        }
+        return { lines: out }
+      }
+
+      function submitPurchase() {
+        // 同步旗標擋連點（規格 §6）：第二下在第一下的請求出去之前就被擋掉
+        if (form === null || form.sending) return
+        var checked = checkForm()
+        if (checked.message) {
+          form.message = checked.message
+          return renderForm()
+        }
+        var mine = form
+        var ticket = begin()
+        mine.sending = true
+        mine.message = ''
+        var attempt = ++mine.attempt
+        renderForm(true)   // 按下去立刻變成「送出中…」，所有格子鎖住（鎖住才不會在送出途中換編號）
+
+        // 回來的是不是這一次的送出。看門狗接手之後、或他已經離開這個畫面，就不算
+        function stillMine() { return current(ticket) && form === mine && mine.attempt === attempt }
+        function backToForm(message) {
+          mine.attempt++
+          mine.sending = false
+          mine.message = message
+          begin()
+          renderForm()
+        }
+
+        armWatchdog(function () {
+          if (!stillMine()) return
+          backToForm('等太久了，不確定有沒有送出。請直接再按一次「送出」——系統認得同一張單，不會重複。')
+        })
+
+        log({ step: 'submit', lines: checked.lines.length })
+        call('submitPurchase', { requestId: mine.requestId, lines: checked.lines }).then(function (r) {
+          if (!stillMine()) return
+          clearTimeout(watchdog)
+          log({ step: 'submitted', ok: r.ok, code: r.code })
+          if (r.ok) return showSubmitted(r)
+          if (handledAuth(r)) return
+          backToForm(messageOf(r))
+        }, function (err) {
+          if (!stillMine()) return
+          clearTimeout(watchdog)
+          log({ step: 'error', code: err && err.code, message: err && err.message })
+          if (err && err.code === 'NO_TOKEN') return reloadOnce()
+          backToForm('送出的時候連線斷了，不確定有沒有送出。請確認網路之後，直接再按一次「送出」——系統認得同一張單，不會重複。')
+        })
+      }
+
+      /** 一行明細（送出成功、單據明細共用）。列的是**後端回傳的**內容。 */
+      function lineItem(l) {
+        return el('div', { cls: 'item' }, [
+          el('div', { cls: 'item-name', text: l.seq + '. ' + l.productName }),
+          el('div', { text: '放在 ' + l.binCode }),
+          el('div', { cls: 'num', text: l.qtyText }),
+          el('div', { cls: 'num', text: l.amountText + ' 元' }),
+        ])
+      }
+
+      /** 送出成功。**列的是後端實際存下的明細**，不是表單上的內容（F7）。 */
+      function showSubmitted(r) {
+        form = null
+        var parts = [
+          el('div', { cls: 'box' }, [
+            el('p', { cls: 'good', text: '送出了。' }),
+            el('p', { text: '單號' }),
+            el('p', { cls: 'num', text: r.docNo }),
+          ]),
+        ]
+        if (r.duplicate) {
+          parts.push(el('p', { cls: 'muted', text: '這張單剛才已經送出過了，下面是當時存下的內容。' }))
+        }
+        parts.push(el('p', { text: '庫存要等老闆按「通過」之後才會加上去。' }))
+        parts.push(el('h2', { text: '存下的內容' }))
+        r.lines.forEach(function (l) { parts.push(lineItem(l)) })
+        parts.push(el('p', { cls: 'num', text: '合計 ' + r.totalText + ' 元' }))
+        parts.push(homeButton())
+        parts.push(button('再開一張進貨單', function () { openPurchase() }))
+        render(parts)
+      }
+
+      // ---- 待複核（老闆）／我送出的單（店長） ----
+
+      function listButton() {
+        return button(isOwner() ? '回待複核清單' : '回我送出的單', function () { openList() })
+      }
+
+      function openList() {
+        var t = begin()
+        showLoading()
+        call('listDocs').then(function (r) {
+          if (!current(t)) return
+          if (r.ok) return showList(r)
+          if (handledAuth(r)) return
+          showError(messageOf(r), [homeButton(), reloadButton()])
+        }).catch(netFailed(t))
+      }
+
+      function showList(r) {
+        clearTimeout(watchdog)
+        var owner = isOwner()
+        var parts = [el('h2', { text: owner ? '待複核' : '我送出的單' })]
+        if (r.docs.length === 0) {
+          parts.push(el('p', { text: owner ? '現在沒有等你複核的單。' : '你最近沒有送出任何單。' }))
+        } else {
+          parts.push(el('p', { cls: 'muted', text: owner ? '點一張單看內容，看完再決定通過或退回。' : '點一張單看內容。' }))
+        }
+        r.docs.forEach(function (d) {
+          var b = button('', function () { openDoc(d.docNo) }, 'wide')
+          b.appendChild(el('div', { cls: 'num', text: d.docNo }))
+          b.appendChild(el('div', { text: textOf(TYPE_TEXT, d.docType) + '　' + textOf(STATUS_TEXT, d.status) }))
+          b.appendChild(el('div', { text: d.createdByName + '　' + whenText(d.createdAt) }))
+          b.appendChild(el('div', { text: d.lineCount + ' 行　合計 ' + d.totalText + ' 元' }))
+          parts.push(b)
+        })
+        parts.push(homeButton())
+        render(parts)
+      }
+
+      // ---- 單據明細 ----
+
+      function openDoc(docNo) {
+        var t = begin()
+        showLoading()
+        call('getDoc', { docNo: docNo }).then(function (r) {
+          if (!current(t)) return
+          if (r.ok) return showDoc(r, '')
+          if (handledAuth(r)) return
+          showError(messageOf(r), [listButton(), homeButton()])
+        }).catch(netFailed(t, null, [listButton(), homeButton()]))
+      }
+
+      function showDoc(r, note) {
+        clearTimeout(watchdog)
+        var d = r.doc
+        var owner = isOwner()
+        var parts = [
+          el('h2', { text: textOf(TYPE_TEXT, d.docType) }),
+          el('p', { cls: 'num', text: d.docNo }),
+          el('p', { text: '狀態：' + textOf(STATUS_TEXT, d.status) }),
+          el('p', { text: '送單的人：' + d.createdByName }),
+          el('p', { text: '送出時間：' + whenText(d.createdAt) }),
+        ]
+        if (d.isOwnDoc && d.status === 'PENDING') {
+          parts.push(el('p', { cls: 'muted', text: '這是你自己開的單。通過之後會記下「自己核的」。' }))
+        }
+        if (d.status === 'REJECTED') {
+          parts.push(el('div', { cls: 'box' }, [
+            el('p', { cls: 'bad', text: '已退回。原因：' }),
+            el('p', { text: d.rejectReason }),
+          ]))
+        }
+        r.lines.forEach(function (l) { parts.push(lineItem(l)) })
+        parts.push(el('p', { cls: 'num', text: '合計 ' + d.totalText + ' 元' }))
+        if (note) parts.push(el('div', { cls: 'box' }, [el('p', { cls: 'bad', text: note })]))
+
+        var reviewButtons = []
+        if (owner && d.status === 'PENDING' && d.docType === 'PURCHASE') {
+          var pass = button('通過（庫存加上去）', function () { review(r, pass, reviewButtons) }, 'primary')
+          var back = button('退回', function () { showRejectForm(r, '') })
+          reviewButtons.push(pass, back)
+          parts.push(pass, back)
+        }
+        parts.push(listButton())
+        parts.push(homeButton())
+        render(parts)
+      }
+
+      /** 通過。重按永遠安全（後端在鎖內重讀狀態、核對已寫的異動），但畫面上還是擋連點。 */
+      function review(r, pass, buttons) {
+        if (pass.disabled) return
+        buttons.forEach(function (b) { b.disabled = true })   // 同步擋連點
+        pass.textContent = '通過中…'
+        var d = r.doc
+        var ticket = begin()
+        var reopen = function () { return button('重新打開這張單', function () { openDoc(d.docNo) }) }
+
+        armWatchdog(function () {
+          if (!current(ticket)) return
+          begin()
+          showError('等太久了，不確定有沒有通過。請按「重新打開這張單」看狀態；再按一次「通過」也安全，不會重複入庫。', [reopen(), listButton(), homeButton()])
+        })
+
+        call('approve', { docNo: d.docNo, updatedAt: d.updatedAt }).then(function (res) {
+          if (!current(ticket)) return
+          clearTimeout(watchdog)
+          if (res.ok) return showReviewed(d.docNo, 'POSTED')
+          if (handledAuth(res)) return
+          if (res.code === 'D2') return showError(messageOf(res), [listButton(), homeButton()])
+          if (res.code === 'L1') return showDoc(r, messageOf(res))   // 留在這張單，等幾秒再按
+          showError(messageOf(res), [reopen(), listButton(), homeButton()])
+        }, function (err) {
+          if (!current(ticket)) return
+          clearTimeout(watchdog)
+          if (err && err.code === 'NO_TOKEN') return reloadOnce()
+          showError('連線斷了，不確定有沒有通過。請按「重新打開這張單」看狀態；再按一次「通過」也安全，不會重複入庫。', [reopen(), listButton(), homeButton()])
+        })
+      }
+
+      /** 退回要寫原因（必填，100 字以內），送單的人會看到。 */
+      function showRejectForm(r, message) {
+        begin()
+        clearTimeout(watchdog)
+        var d = r.doc
+        var reason = el('textarea')
+        reason.maxLength = 100
+        var note = el('p', { cls: 'bad', text: message })
+        var busy = false
+        var confirm = button('確定退回', function () {
+          if (busy) return
+          var text = reason.value.trim()
+          if (text === '') { note.textContent = '請先寫退回的原因，讓送單的人知道要改什麼。'; return }
+          if (text.length > 100) { note.textContent = '原因最多 100 個字。'; return }
+          busy = true   // 同步擋連點
+          confirm.disabled = true
+          cancel.disabled = true
+          confirm.textContent = '退回中…'
+          var ticket = begin()
+          var reopen = function () { return button('重新打開這張單', function () { openDoc(d.docNo) }) }
+          armWatchdog(function () {
+            if (!current(ticket)) return
+            begin()
+            showError('等太久了，不確定有沒有退回。請按「重新打開這張單」看狀態。', [reopen(), listButton(), homeButton()])
+          })
+          call('reject', { docNo: d.docNo, updatedAt: d.updatedAt, reason: text }).then(function (res) {
+            if (!current(ticket)) return
+            clearTimeout(watchdog)
+            if (res.ok) return showReviewed(d.docNo, 'REJECTED')
+            if (handledAuth(res)) return
+            if (res.code === 'B6' || res.code === 'L1') return showRejectForm(r, messageOf(res))
+            if (res.code === 'D2') return showError(messageOf(res), [listButton(), homeButton()])
+            showError(messageOf(res), [reopen(), listButton(), homeButton()])
+          }, function (err) {
+            if (!current(ticket)) return
+            clearTimeout(watchdog)
+            if (err && err.code === 'NO_TOKEN') return reloadOnce()
+            showError('連線斷了，不確定有沒有退回。請按「重新打開這張單」看狀態。', [reopen(), listButton(), homeButton()])
+          })
+        }, 'primary')
+        var cancel = button('取消，回到這張單', function () { if (!busy) showDoc(r, '') })
+
+        render([
+          el('h2', { text: '退回 ' + d.docNo }),
+          el('p', { text: '請寫退回的原因（100 字以內），送單的人會看到。' }),
+          el('label', { text: '原因' }),
+          reason,
+          note,
+          confirm,
+          cancel,
+        ])
+      }
+
+      function showReviewed(docNo, status) {
+        render([
+          el('div', { cls: 'box' }, [
+            el('p', { cls: 'good', text: status === 'POSTED' ? '已通過。庫存已經加上去了。' : '已退回。送單的人會在「我送出的單」看到原因。' }),
+            el('p', { cls: 'num', text: docNo }),
+          ]),
+          listButton(),
+          homeButton(),
+        ])
+      }
+
       // ---- 身分憑證過期 ----
       //
       // **不在前端判斷「快過期了沒」。** 那要靠手機的時鐘，而手機時鐘快了一小時左右
       // 的話，那支手機會永遠被判定過期、永遠用不了。完全交給後端判斷（回 A2）。
 
       /**
-       * 後端說過期（A2）：先登出、再重新整理一次。
+       * 後端說過期（A2）：先登出、再從 LIFF 連結重新打開一次（見 reopenFresh）。
        *
-       * 登出不是多餘的：社群回報 LIFF 會把過期的 ID token 快取在手機上，單純重新
-       * 整理可能拿回同一個過期的。登出會清掉快取，逼它拿新的。（這一條還沒在實機
-       * 上驗證過 —— 要等一個小時讓憑證真的過期才測得到。）
+       * 原本是登出＋location.reload()，實機證實不行：重新整理帶的還是同一張過期
+       * 憑證。登出保留：社群回報 LIFF 會把過期的 ID token 快取在手機上，登出清掉
+       * 快取，避免從連結打開時又拿回快取裡那張。（新做法還沒在實機上驗證過 ——
+       * 要開著等一個小時讓憑證真的過期才測得到。）
        *
        * 只重試一次：一分鐘內重試過，或手機的暫存空間不能用（無法記住「重試過了」），
        * 都直接給按鈕 —— 不然設定真的壞掉時會無限重新整理。
        */
       function reloadOnce() {
+        begin()
         var key = 'poyuntea-reloaded-at'
         var last
         try {
@@ -284,14 +894,14 @@
           showError('登入一直失敗。請把這個畫面關掉（右上角的 X），再從選單打開一次。')
           return
         }
-        showLoading('登入過期了，重新整理中…')
+        showLoading('登入過期了，重新打開中…')
         try { liff.logout() } catch (e) {}
-        location.reload()
+        reopenFresh()
       }
 
       // ---- 呼叫後端 ----
 
-      function call(action) {
+      function call(action, params) {
         var token = liff.getIDToken()
         if (!token) return Promise.reject({ code: 'NO_TOKEN' })
 
@@ -300,12 +910,18 @@
         var controller = typeof AbortController === 'function' ? new AbortController() : null
         var timer = controller ? setTimeout(function () { controller.abort() }, FETCH_TIMEOUT_MS) : null
 
+        // action 與 idToken 最後才放，參數裡夾帶同名欄位也蓋不掉它們
+        var body = {}
+        Object.keys(params || {}).forEach(function (k) { body[k] = params[k] })
+        body.action = action
+        body.idToken = token
+
         // text/plain 不是打錯：application/json 會觸發 CORS 預檢，
         // 而 Apps Script 不處理 OPTIONS，整個呼叫會失敗。
         return fetch(BACKEND_URL, {
           method: 'POST',
           headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-          body: JSON.stringify({ action: action, idToken: token }),
+          body: JSON.stringify(body),
           signal: controller ? controller.signal : undefined,
         }).then(function (res) {
           clearTimeout(timer)
@@ -348,29 +964,25 @@
       }
 
       function start() {
+      var t0 = view
       liff.init({ liffId: LIFF_ID })
         .then(function () {
+          if (!current(t0)) return   // 看門狗已經接手
           log({ step: 'liff.init', os: liff.getOS(), inClient: liff.isInClient() })
           if (!liff.isLoggedIn()) {
             liff.login()
             return
           }
 
-          // 圖文選單的 ?to= 決定開哪一頁。目前只有查庫存，其他值一律開查庫存。
+          // 圖文選單的 ?to= 決定開哪一頁。目前一律從首頁（查庫存）開始，
+          // 進貨與待複核都從首頁的按鈕進去
           var to = new URLSearchParams(location.search).get('to')
           log({ step: 'route', to: to })
 
-          showLoading()
-          return call('stock').then(function (r) {
-            log({ step: 'stock', ok: r.ok, code: r.code, timing: r.timing })
-            if (r.ok) return showStock(r)
-            if (r.code === 'A2') return reloadOnce()
-            if (r.code === 'A3') return showNotAllowed(r.userId, false)
-            if (r.code === 'A5') return showNotAllowed(r.userId, true)
-            return showError(messageFor(r.code))
-          })
+          goHome()
         })
         .catch(function (err) {
+          if (!current(t0)) return
           log({ step: 'error', code: err && err.code, message: err && err.message })
           if (err && err.code === 'NO_TOKEN') return reloadOnce()
           showError('連不到店裡的系統。請確認網路之後按「重新整理」。')
