@@ -76,10 +76,11 @@
     }
     input.num-input { font-size: var(--number-font-size); }
     textarea { min-height: 120px; }
-    /* 數量跟單位放同一列：數字在左、單位在右，中間留 12px */
-    .pair { display: flex; gap: var(--tap-gap); }
-    .pair > input { flex: 1 1 auto; min-width: 0; }
-    .pair > select { flex: 0 0 40%; }
+    /* 單位是一排按鍵，不是下拉選單：iPhone 的下拉選單會跳出要用手指轉的滾輪，
+       違反「只能點、不能滑」（規格 §6）；而且收起來時只看得到目前選的那一個，
+       實機上老闆以為只有「台斤」可以選。選中的那顆整顆反黑。 */
+    .units { margin: 0 0 var(--tap-gap); }
+    .units button[aria-pressed="true"] { background: var(--ink); color: var(--paper); font-weight: bold; }
     pre { font-size: 14px; white-space: pre-wrap; background: #f3f3f3; padding: 8px; margin: 0; }
   </style>
 </head>
@@ -510,16 +511,26 @@
         qty.value = ln.qty
         qty.disabled = locked
         qty.addEventListener('input', function () { ln.qty = qty.value; edited() })
-        var unit = el('select')
-        ;(product ? product.purchaseUnits : ['先選商品']).forEach(function (u) {
-          var o = el('option', { text: u })
-          o.value = product ? u : ''
-          unit.appendChild(o)
-        })
-        unit.value = product ? ln.unit : ''
-        unit.disabled = locked || !product
-        unit.addEventListener('change', function () { ln.unit = unit.value; edited() })
-        box.appendChild(el('div', { cls: 'pair' }, [qty, unit]))
+        box.appendChild(qty)
+
+        box.appendChild(el('label', { text: '單位' }))
+        if (!product) {
+          box.appendChild(el('p', { cls: 'muted', text: '先選商品，這裡才會出現可以用的單位' }))
+        } else {
+          var unitRow = el('div', { cls: 'units' })
+          var unitButtons = product.purchaseUnits.map(function (u) {
+            var b = button(u, function () {
+              ln.unit = u
+              unitButtons.forEach(function (x) { x.setAttribute('aria-pressed', String(x === b)) })
+              edited()
+            })
+            b.setAttribute('aria-pressed', String(u === ln.unit))
+            b.disabled = locked
+            unitRow.appendChild(b)
+            return b
+          })
+          box.appendChild(unitRow)
+        }
 
         box.appendChild(el('label', { text: '這一行花了多少錢（元）' }))
         var amount = el('input', { cls: 'num-input' })
