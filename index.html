@@ -12,7 +12,9 @@
       --tap-target: 56px;
       --tap-gap: 12px;
       --ink: #1a1a1a;
+      --muted: #4a4a4a;
       --paper: #ffffff;
+      --line: #1a1a1a;
       --ok: #0b6b2e;
       --bad: #a4000f;
     }
@@ -27,23 +29,27 @@
       overflow-wrap: anywhere;
     }
     h1 { font-size: 24px; margin: 0 0 16px; }
-    ol { padding-left: 1.4em; margin: 0 0 24px; }
-    li { margin-bottom: 8px; }
-    .ok { color: var(--ok); font-weight: bold; }
+    h2 { font-size: 20px; margin: 24px 0 12px; }
+    p { margin: 0 0 12px; }
+    .muted { color: var(--muted); }
     .bad { color: var(--bad); font-weight: bold; }
-    .wait { color: #555; }
-    .box { border: 2px solid var(--ink); padding: 12px; margin-bottom: 16px; }
+    .box { border: 2px solid var(--line); padding: 12px; margin-bottom: 16px; }
+    .num { font-size: var(--number-font-size); font-weight: bold; }
     .uid {
       font-family: ui-monospace, Menlo, Consolas, monospace;
       font-size: var(--number-font-size);
       word-break: break-all;
       margin: 8px 0 12px;
     }
+    .item { border-bottom: 1px solid #bbb; padding: 12px 0; }
+    .item:last-child { border-bottom: none; }
+    .item-name { font-weight: bold; }
+    .bin { font-size: 20px; font-weight: bold; margin: 16px 0 4px; }
     button {
       min-height: var(--tap-target);
       min-width: var(--tap-target);
       font-size: var(--body-font-size);
-      /* 水平與垂直間距都要給（Node 版的教訓：只給下方間距時數字鍵是邊貼邊的） */
+      /* 水平與垂直間距都要給（Node 版的教訓：只給下方間距時按鍵是邊貼邊的） */
       margin: 0 var(--tap-gap) var(--tap-gap) 0;
       padding: 0 20px;
       background: var(--paper);
@@ -51,178 +57,130 @@
       border: 2px solid var(--ink);
     }
     pre { font-size: 14px; white-space: pre-wrap; background: #f3f3f3; padding: 8px; margin: 0; }
-    .hidden { display: none; }
   </style>
 </head>
 <body>
-  <h1>柏雲茶帳本 · 連線測試</h1>
+  <main id="app">
+    <h1>柏雲茶帳本</h1>
+    <p class="num">正在讀取…</p>
+  </main>
 
-  <ol>
-    <li id="s-sdk" class="wait">載入 LINE 元件…</li>
-    <li id="s-init" class="wait">啟動 LINE 登入…</li>
-    <li id="s-login" class="wait">確認登入狀態…</li>
-    <li id="s-token" class="wait">取得身分憑證…</li>
-    <li id="s-verify" class="wait">向 LINE 驗證…</li>
-  </ol>
-
-  <div id="result" class="box hidden">
-    <div>你的使用者編號：</div>
-    <div id="uid" class="uid"></div>
-    <button id="copy" type="button">複製</button>
-    <div id="copied" class="ok hidden">已複製，貼到「柏雲茶帳本」的聊天室送出，再回電腦上複製</div>
-  </div>
-
-  <div id="fail" class="box hidden">
-    <div class="bad" id="fail-msg"></div>
-  </div>
-
-  <details class="box" open>
-    <summary>給開發人員看的診斷資料（截圖這一段給我）</summary>
+  <details id="diag-box" class="box">
+    <summary>給開發人員看的診斷資料</summary>
     <pre id="diag"></pre>
   </details>
 
-  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
   <script>
     (function () {
-      // 這兩個值會在發布時填入。它們都不是機密：LIFF ID 本來就在圖文選單的
-      // 連結裡、後端網址設計上就當成公開資訊（設計文件 §5.2）。所有防護都在
-      // 後端的 token 驗證，不靠這一頁藏任何東西。
+      // 這兩個值在發布時由 scripts/publish.py 填入。它們都不是機密：
+      // LIFF ID 本來就在圖文選單的連結裡、後端網址設計上就當成公開資訊
+      // （設計文件 §5.2）。所有防護都在後端的 token 驗證。
       var LIFF_ID = '2011787319-F5PDXDUn'
       var BACKEND_URL = 'https://script.google.com/macros/s/AKfycbxkqeQVGN4njMFKBdfqpyabeVYQ_jgncRt33sC00RcNPrsTMQf_6XSuUQbkwjAkI6V0Xg/exec'
 
-      var t0 = Date.now()
-      var diag = {
-        version: 'smoke-v2（網頁在 GitHub Pages、後端在 Apps Script）',
-        steps: [],
-        // 第一版在 Apps Script 沙箱裡這兩個永遠是空的。這一版在最外層跑，
-        // 應該看得到圖文選單帶來的參數，以及 LIFF 包進來的 liff.state。
-        search: location.search,
-        hashLength: location.hash.length,   // 只記長度：hash 裡可能有憑證，不可以印出來
-        host: location.host,
-        userAgent: navigator.userAgent,
-      }
+      // 任何「正在讀取」超過這麼久就給他一顆按鈕 —— 不可以是死路。
+      // 第一次冒煙測試在實機上就遇過 liff.init() 永遠不 settle。
+      var WATCHDOG_MS = 15000
+      // 一次後端呼叫實測約 2 秒（設計文件 §9.3），20 秒是很寬的上限。
+      var FETCH_TIMEOUT_MS = 20000
 
-      function showDiag() {
+      var diag = { t0: Date.now(), events: [] }
+      function log(ev) {
+        ev.atMs = Date.now() - diag.t0
+        diag.events.push(ev)
         document.getElementById('diag').textContent = JSON.stringify(diag, null, 2)
       }
 
-      // 一律用 textContent，不用 innerHTML —— 設計文件 §5.5。
-      // 每一步都即時更新診斷資料 —— 第一版只在開頭與結束時更新，卡在中間時
-      // 分不出是卡在哪一步。
-      function mark(id, ok, text) {
-        var el = document.getElementById(id)
-        el.className = ok ? 'ok' : 'bad'
-        el.textContent = (ok ? '✓ ' : '✗ ') + text
-        diag.steps.push({ step: id, ok: ok, atMs: Date.now() - t0 })
-        diag.lastStep = id
-        showDiag()
+      // ---- 畫面工具：一律用 textContent / createElement，禁止 innerHTML（§5.5）----
+
+      function el(tag, opts, children) {
+        var node = document.createElement(tag)
+        if (opts && opts.text !== undefined) node.textContent = opts.text
+        if (opts && opts.cls) node.className = opts.cls
+        ;(children || []).forEach(function (c) { if (c) node.appendChild(c) })
+        return node
       }
 
-      var watchdog = setTimeout(function () {
-        if (diag.done) return
-        diag.stuck = '超過 15 秒沒有進展，最後完成的一步是：' + (diag.lastStep || '（一步都沒有）')
-        showDiag()
-        document.getElementById('fail-msg').textContent =
-          '卡住了。請截圖整個畫面（包括上面的步驟與下面的診斷資料）給我。'
-        document.getElementById('fail').className = 'box'
-      }, 15000)
-
-      function fail(stepId, stepText, userMsg, detail) {
-        mark(stepId, false, stepText)
-        diag.failedAt = stepId
-        diag.done = true
+      var watchdog = null
+      function armWatchdog() {
         clearTimeout(watchdog)
-        if (detail !== undefined) diag.failDetail = String(detail)
-        document.getElementById('fail-msg').textContent = userMsg
-        document.getElementById('fail').className = 'box'
-        showDiag()
+        watchdog = setTimeout(function () {
+          log({ step: 'watchdog' })
+          showError('等太久了，好像卡住了。請按「重新整理」；還是不行的話，把這個畫面關掉再從選單打開。')
+        }, WATCHDOG_MS)
       }
 
-      showDiag()
-
-      if (LIFF_ID.indexOf('__') === 0 || BACKEND_URL.indexOf('__') === 0) {
-        return fail('s-sdk', '載入 LINE 元件', '這一頁還沒填好設定（發布時漏了一步），請告訴我。')
+      function render(children) {
+        var app = document.getElementById('app')
+        while (app.firstChild) app.removeChild(app.firstChild)
+        app.appendChild(el('h1', { text: '柏雲茶帳本' }))
+        children.forEach(function (c) { if (c) app.appendChild(c) })
       }
-      if (typeof liff === 'undefined') {
-        return fail('s-sdk', '載入 LINE 元件', '載不到 LINE 的元件。請確認網路，或換個網路再試。')
-      }
-      mark('s-sdk', true, '載入 LINE 元件')
 
-      diag.initStartedAtMs = Date.now() - t0
-      showDiag()
-
-      liff.init({ liffId: LIFF_ID })
-        .then(function () {
-          mark('s-init', true, '啟動 LINE 登入')
-          diag.liffOs = liff.getOS()
-          diag.inClient = liff.isInClient()
-          diag.searchAfterInit = location.search
-          showDiag()
-
-          if (!liff.isLoggedIn()) {
-            // 在 LINE 裡面開應該已經登入；在外部瀏覽器開才會走到這裡
-            diag.loginRedirect = true
-            showDiag()
-            liff.login()
-            return
-          }
-          mark('s-login', true, '確認登入狀態')
-
-          var token = liff.getIDToken()
-          if (!token) {
-            return fail('s-token', '取得身分憑證', '拿不到身分憑證。請確認 LIFF 設定的 Scopes 有勾「openid」。')
-          }
-          mark('s-token', true, '取得身分憑證')
-
-          // text/plain 不是打錯：application/json 會觸發 CORS 預檢，
-          // 而 Apps Script 不處理 OPTIONS，整個呼叫會失敗。
-          return fetch(BACKEND_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-            body: JSON.stringify({ action: 'verifyIdentity', idToken: token }),
-          })
-            .then(function (res) {
-              diag.backendHttp = res.status
-              return res.json()
-            })
-            .then(function (r) {
-              diag.verify = { ok: r.ok, code: r.code, ttlSeconds: r.ttlSeconds }
-              if (!r.ok) {
-                return fail('s-verify', '向 LINE 驗證', '驗證失敗（代碼 ' + r.code + '）：' + r.message)
-              }
-              mark('s-verify', true, '向 LINE 驗證')
-              diag.done = true
-              clearTimeout(watchdog)
-              document.getElementById('uid').textContent = r.userId
-              document.getElementById('result').className = 'box'
-              showDiag()
-            })
-            .catch(function (err) {
-              // 最可能是跨網域呼叫被瀏覽器擋掉 —— 這是這一版要驗證的第二件事
-              fail('s-verify', '向 LINE 驗證',
-                '連不到後端。請截圖下面的診斷資料給我。', err && err.message)
-            })
+      /**
+       * 手動按的「重新整理」要**真的再試一次**。
+       *
+       * 「一分鐘內重試過就不再自動重整」那個記號，是用來擋**自動**重整無限迴圈的。
+       * 使用者手動按是刻意的；不清掉的話，「登入一直失敗」那個畫面的按鈕在一分鐘內
+       * 按了等於沒按，永遠拿到同一個錯誤。
+       */
+      function reloadButton() {
+        var b = el('button', { text: '重新整理' })
+        b.type = 'button'
+        b.addEventListener('click', function () {
+          try { sessionStorage.removeItem('poyuntea-reloaded-at') } catch (e) {}
+          location.reload()
         })
-        .catch(function (err) {
-          fail('s-init', '啟動 LINE 登入',
-            'LINE 登入啟動失敗。請截圖下面的診斷資料給我。', err && (err.code + ' ' + err.message))
-        })
+        return b
+      }
 
-      var copying = false
-      document.getElementById('copy').addEventListener('click', function () {
-        if (copying) return          // 同步旗標擋連點（設計文件 §6）
-        copying = true
-        var text = document.getElementById('uid').textContent
-        var done = function () {
-          document.getElementById('copied').className = 'ok'
-          copying = false
-        }
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText(text).then(done, function () { fallbackCopy(text); done() })
-        } else {
-          fallbackCopy(text); done()
-        }
-      })
+      /** 讀取中的畫面沒有按鈕，所以**一定要有看門狗**：卡住的話 15 秒後換成錯誤畫面。 */
+      function showLoading(text) {
+        render([el('p', { cls: 'num', text: text || '正在讀取…' })])
+        armWatchdog()
+      }
+
+      /** 每一種失敗都要講人話，而且**一定留一顆可以按的按鈕** —— 不可以是死路。 */
+      function showError(message) {
+        clearTimeout(watchdog)
+        render([el('div', { cls: 'box' }, [el('p', { cls: 'bad', text: message })]), reloadButton()])
+      }
+
+      // ---- 錯誤代碼 → 給人看的話（每個代碼對應唯一一種處置，見 gas/auth.gs）----
+
+      var MESSAGES = {
+        A1: '系統設定還沒完成（代碼 A1），請找開發人員。',
+        A4: '暫時連不到 LINE，請等一下再按「重新整理」。',
+        A6: '系統設定有誤（代碼 A6），請找開發人員。',
+        S1: '試算表還沒準備好（代碼 S1），請找開發人員。',
+      }
+
+      function messageFor(code) {
+        return MESSAGES[code] || '系統出錯了（代碼 ' + code + '），請等一下再按「重新整理」。'
+      }
+
+      // ---- 使用者編號與複製（不在名單上時用） ----
+
+      function copyButton(text) {
+        var b = el('button', { text: '複製' })
+        b.type = 'button'
+        var done = el('p', { cls: 'muted', text: '' })
+        var copying = false   // 同步旗標擋連點（設計文件 §6）
+        b.addEventListener('click', function () {
+          if (copying) return
+          copying = true
+          var finish = function () {
+            done.textContent = '已複製。貼到「柏雲茶帳本」的聊天室送出，再回電腦上複製。'
+            copying = false
+          }
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(finish, function () { fallbackCopy(text); finish() })
+          } else {
+            fallbackCopy(text); finish()
+          }
+        })
+        return [b, done]
+      }
 
       function fallbackCopy(text) {
         var ta = document.createElement('textarea')
@@ -231,6 +189,192 @@
         ta.select()
         try { document.execCommand('copy') } catch (e) {}
         document.body.removeChild(ta)
+      }
+
+      function showNotAllowed(userId, badRole) {
+        clearTimeout(watchdog)
+        var copy = copyButton(userId)
+        render([
+          el('div', { cls: 'box' }, [
+            el('p', { cls: 'bad', text: badRole
+              ? '你已經在名單上，但「角色」那一欄沒有填對。'
+              : '這支手機還沒有被授權。' }),
+            el('p', { text: '你的使用者編號是：' }),
+            el('div', { cls: 'uid', text: userId }),
+            copy[0],
+            copy[1],
+          ]),
+          el('p', { text: badRole
+            ? '請在試算表的「設定」分頁，把你那一列的角色改成 OWNER 或 MANAGER（要大寫）。'
+            : '請把這串編號貼進試算表「設定」分頁，標題列底下的第一個空白列。角色填 OWNER 或 MANAGER（要大寫）。' }),
+          el('p', { cls: 'muted', text: '填好之後按下面的按鈕。' }),
+          reloadButton(),
+        ])
+      }
+
+      // ---- 查庫存 ----
+
+      function showStock(r) {
+        clearTimeout(watchdog)
+        var isOwner = r.role === 'OWNER'
+        var parts = [el('p', { cls: 'muted', text: '你好，' + r.name })]
+
+        parts.push(el('h2', { text: '每一種茶' }))
+        if (r.items.length === 0) {
+          parts.push(el('p', { text: '還沒有任何商品。請在試算表的「商品」分頁加一列。' }))
+        }
+        r.items.forEach(function (it) {
+          var lines = [
+            el('div', { cls: 'item-name', text: it.name }),
+            el('div', { cls: 'num', text: it.onBookText }),
+          ]
+          // 可賣跟帳上不同時才講 —— 相同的話多一行只是讓人分心
+          if (it.availableText !== it.onBookText) {
+            lines.push(el('div', { text: '其中可以賣的：' + it.availableText + '（有單子還在等複核）' }))
+          }
+          if (isOwner && it.avgCostText !== undefined) {
+            lines.push(el('div', { cls: 'muted', text: '平均成本：每' + it.quoteUnit + ' ' + it.avgCostText + ' 元' }))
+          }
+          parts.push(el('div', { cls: 'item' }, lines))
+        })
+
+        parts.push(el('h2', { text: '每一格' }))
+        if (r.byBin.length === 0) {
+          parts.push(el('p', { text: '還沒有任何一格有東西。' }))
+        }
+        var lastBin = null
+        r.byBin.forEach(function (b) {
+          if (b.binCode !== lastBin) {
+            parts.push(el('div', { cls: 'bin', text: b.binCode }))
+            lastBin = b.binCode
+          }
+          parts.push(el('div', { text: b.name + '　' + b.qtyText }))
+        })
+
+        parts.push(el('div', { text: '' }))
+        parts.push(reloadButton())
+        render(parts)
+      }
+
+      // ---- 身分憑證過期 ----
+      //
+      // **不在前端判斷「快過期了沒」。** 那要靠手機的時鐘，而手機時鐘快了一小時左右
+      // 的話，那支手機會永遠被判定過期、永遠用不了。完全交給後端判斷（回 A2）。
+
+      /**
+       * 後端說過期（A2）：先登出、再重新整理一次。
+       *
+       * 登出不是多餘的：社群回報 LIFF 會把過期的 ID token 快取在手機上，單純重新
+       * 整理可能拿回同一個過期的。登出會清掉快取，逼它拿新的。（這一條還沒在實機
+       * 上驗證過 —— 要等一個小時讓憑證真的過期才測得到。）
+       *
+       * 只重試一次：一分鐘內重試過，或手機的暫存空間不能用（無法記住「重試過了」），
+       * 都直接給按鈕 —— 不然設定真的壞掉時會無限重新整理。
+       */
+      function reloadOnce() {
+        var key = 'poyuntea-reloaded-at'
+        var last
+        try {
+          last = Number(sessionStorage.getItem(key) || 0)
+          sessionStorage.setItem(key, String(Date.now()))
+        } catch (e) {
+          last = Date.now()   // 記不住就當作「剛試過」，不要冒無限迴圈的險
+        }
+        if (Date.now() - last < 60 * 1000) {
+          showError('登入一直失敗。請把這個畫面關掉（右上角的 X），再從選單打開一次。')
+          return
+        }
+        showLoading('登入過期了，重新整理中…')
+        try { liff.logout() } catch (e) {}
+        location.reload()
+      }
+
+      // ---- 呼叫後端 ----
+
+      function call(action) {
+        var token = liff.getIDToken()
+        if (!token) return Promise.reject({ code: 'NO_TOKEN' })
+
+        // 手機網路卡住時 fetch 可能永遠不回。看門狗會先接手畫面，這裡再把請求
+        // 本身斷掉，免得它在背景掛著。
+        var controller = typeof AbortController === 'function' ? new AbortController() : null
+        var timer = controller ? setTimeout(function () { controller.abort() }, FETCH_TIMEOUT_MS) : null
+
+        // text/plain 不是打錯：application/json 會觸發 CORS 預檢，
+        // 而 Apps Script 不處理 OPTIONS，整個呼叫會失敗。
+        return fetch(BACKEND_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({ action: action, idToken: token }),
+          signal: controller ? controller.signal : undefined,
+        }).then(function (res) {
+          clearTimeout(timer)
+          log({ action: action, http: res.status })
+          if (!res.ok) return Promise.reject({ code: 'HTTP_' + res.status })
+          return res.json().catch(function () { return Promise.reject({ code: 'NOT_JSON' }) })
+        }, function (err) {
+          clearTimeout(timer)
+          return Promise.reject(err)
+        })
+      }
+
+      // ---- 啟動 ----
+
+      if (LIFF_ID.indexOf('__') === 0 || BACKEND_URL.indexOf('__') === 0) {
+        return showError('這一頁還沒填好設定（發布時漏了一步），請找開發人員。')
+      }
+      // **先上看門狗，再載入 LINE 元件。**
+      //
+      // 原本是 <script src="…sdk.js"> 寫在這段程式前面。那種寫法會卡住整頁的解析，
+      // 而看門狗寫在後面 —— 網路很慢、LINE 的伺服器斷斷續續送資料時，看門狗根本
+      // 還沒開始跑，畫面停在「正在讀取…」六十秒以上、沒有按鈕。
+      armWatchdog()
+      loadSdk(start)
+
+      function loadSdk(then) {
+        // 已經有了就不重複載（本機的畫面測試外殼會先放一個假的進來）
+        if (typeof liff !== 'undefined') return then()
+        var tag = document.createElement('script')
+        tag.src = 'https://static.line-scdn.net/liff/edge/2/sdk.js'
+        tag.onload = function () {
+          if (typeof liff === 'undefined') return showError('載不到 LINE 的元件。請確認網路之後按「重新整理」。')
+          then()
+        }
+        tag.onerror = function () {
+          log({ step: 'sdk-error' })
+          showError('載不到 LINE 的元件。請確認網路之後按「重新整理」。')
+        }
+        document.head.appendChild(tag)
+      }
+
+      function start() {
+      liff.init({ liffId: LIFF_ID })
+        .then(function () {
+          log({ step: 'liff.init', os: liff.getOS(), inClient: liff.isInClient() })
+          if (!liff.isLoggedIn()) {
+            liff.login()
+            return
+          }
+
+          // 圖文選單的 ?to= 決定開哪一頁。目前只有查庫存，其他值一律開查庫存。
+          var to = new URLSearchParams(location.search).get('to')
+          log({ step: 'route', to: to })
+
+          showLoading()
+          return call('stock').then(function (r) {
+            log({ step: 'stock', ok: r.ok, code: r.code, timing: r.timing })
+            if (r.ok) return showStock(r)
+            if (r.code === 'A2') return reloadOnce()
+            if (r.code === 'A3') return showNotAllowed(r.userId, false)
+            if (r.code === 'A5') return showNotAllowed(r.userId, true)
+            return showError(messageFor(r.code))
+          })
+        })
+        .catch(function (err) {
+          log({ step: 'error', code: err && err.code, message: err && err.message })
+          if (err && err.code === 'NO_TOKEN') return reloadOnce()
+          showError('連不到店裡的系統。請確認網路之後按「重新整理」。')
+        })
       }
     })()
   </script>
