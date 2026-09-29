@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>柏雲茶帳本</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --body-font-size: 18px;
+      --number-font-size: 24px;
+      --tap-target: 56px;
+      --tap-gap: 12px;
+      --ink: #1a1a1a;
+      --paper: #ffffff;
+      --ok: #0b6b2e;
+      --bad: #a4000f;
+    }
+    body {
+      margin: 0;
+      padding: 16px;
+      background: var(--paper);
+      color: var(--ink);
+      font-family: -apple-system, "Noto Sans TC", "PingFang TC", sans-serif;
+      font-size: var(--body-font-size);
+      line-height: 1.5;
+      overflow-wrap: anywhere;
+    }
+    h1 { font-size: 24px; margin: 0 0 16px; }
+    ol { padding-left: 1.4em; margin: 0 0 24px; }
+    li { margin-bottom: 8px; }
+    .ok { color: var(--ok); font-weight: bold; }
+    .bad { color: var(--bad); font-weight: bold; }
+    .wait { color: #555; }
+    .box { border: 2px solid var(--ink); padding: 12px; margin-bottom: 16px; }
+    .uid {
+      font-family: ui-monospace, Menlo, Consolas, monospace;
+      font-size: var(--number-font-size);
+      word-break: break-all;
+      margin: 8px 0 12px;
+    }
+    button {
+      min-height: var(--tap-target);
+      min-width: var(--tap-target);
+      font-size: var(--body-font-size);
+      /* 水平與垂直間距都要給（Node 版的教訓：只給下方間距時數字鍵是邊貼邊的） */
+      margin: 0 var(--tap-gap) var(--tap-gap) 0;
+      padding: 0 20px;
+      background: var(--paper);
+      color: var(--ink);
+      border: 2px solid var(--ink);
+    }
+    pre { font-size: 14px; white-space: pre-wrap; background: #f3f3f3; padding: 8px; margin: 0; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <h1>柏雲茶帳本 · 連線測試</h1>
+
+  <ol>
+    <li id="s-sdk" class="wait">載入 LINE 元件…</li>
+    <li id="s-init" class="wait">啟動 LINE 登入…</li>
+    <li id="s-login" class="wait">確認登入狀態…</li>
+    <li id="s-token" class="wait">取得身分憑證…</li>
+    <li id="s-verify" class="wait">向 LINE 驗證…</li>
+  </ol>
+
+  <div id="result" class="box hidden">
+    <div>你的使用者編號：</div>
+    <div id="uid" class="uid"></div>
+    <button id="copy" type="button">複製</button>
+    <div id="copied" class="ok hidden">已複製，貼到「柏雲茶帳本」的聊天室送出，再回電腦上複製</div>
+  </div>
+
+  <div id="fail" class="box hidden">
+    <div class="bad" id="fail-msg"></div>
+  </div>
+
+  <details class="box" open>
+    <summary>給開發人員看的診斷資料（截圖這一段給我）</summary>
+    <pre id="diag"></pre>
+  </details>
+
+  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+  <script>
+    (function () {
+      // 這兩個值會在發布時填入。它們都不是機密：LIFF ID 本來就在圖文選單的
+      // 連結裡、後端網址設計上就當成公開資訊（設計文件 §5.2）。所有防護都在
+      // 後端的 token 驗證，不靠這一頁藏任何東西。
+      var LIFF_ID = '2011787319-F5PDXDUn'
+      var BACKEND_URL = 'https://script.google.com/macros/s/AKfycbxkqeQVGN4njMFKBdfqpyabeVYQ_jgncRt33sC00RcNPrsTMQf_6XSuUQbkwjAkI6V0Xg/exec'
+
+      var t0 = Date.now()
+      var diag = {
+        version: 'smoke-v2（網頁在 GitHub Pages、後端在 Apps Script）',
+        steps: [],
+        // 第一版在 Apps Script 沙箱裡這兩個永遠是空的。這一版在最外層跑，
+        // 應該看得到圖文選單帶來的參數，以及 LIFF 包進來的 liff.state。
+        search: location.search,
+        hashLength: location.hash.length,   // 只記長度：hash 裡可能有憑證，不可以印出來
+        host: location.host,
+        userAgent: navigator.userAgent,
+      }
+
+      function showDiag() {
+        document.getElementById('diag').textContent = JSON.stringify(diag, null, 2)
+      }
+
+      // 一律用 textContent，不用 innerHTML —— 設計文件 §5.5。
+      // 每一步都即時更新診斷資料 —— 第一版只在開頭與結束時更新，卡在中間時
+      // 分不出是卡在哪一步。
+      function mark(id, ok, text) {
+        var el = document.getElementById(id)
+        el.className = ok ? 'ok' : 'bad'
+        el.textContent = (ok ? '✓ ' : '✗ ') + text
+        diag.steps.push({ step: id, ok: ok, atMs: Date.now() - t0 })
+        diag.lastStep = id
+        showDiag()
+      }
+
+      var watchdog = setTimeout(function () {
+        if (diag.done) return
+        diag.stuck = '超過 15 秒沒有進展，最後完成的一步是：' + (diag.lastStep || '（一步都沒有）')
+        showDiag()
+        document.getElementById('fail-msg').textContent =
+          '卡住了。請截圖整個畫面（包括上面的步驟與下面的診斷資料）給我。'
+        document.getElementById('fail').className = 'box'
+      }, 15000)
+
+      function fail(stepId, stepText, userMsg, detail) {
+        mark(stepId, false, stepText)
+        diag.failedAt = stepId
+        diag.done = true
+        clearTimeout(watchdog)
+        if (detail !== undefined) diag.failDetail = String(detail)
+        document.getElementById('fail-msg').textContent = userMsg
+        document.getElementById('fail').className = 'box'
+        showDiag()
+      }
+
+      showDiag()
+
+      if (LIFF_ID.indexOf('__') === 0 || BACKEND_URL.indexOf('__') === 0) {
+        return fail('s-sdk', '載入 LINE 元件', '這一頁還沒填好設定（發布時漏了一步），請告訴我。')
+      }
+      if (typeof liff === 'undefined') {
+        return fail('s-sdk', '載入 LINE 元件', '載不到 LINE 的元件。請確認網路，或換個網路再試。')
+      }
+      mark('s-sdk', true, '載入 LINE 元件')
+
+      diag.initStartedAtMs = Date.now() - t0
+      showDiag()
+
+      liff.init({ liffId: LIFF_ID })
+        .then(function () {
+          mark('s-init', true, '啟動 LINE 登入')
+          diag.liffOs = liff.getOS()
+          diag.inClient = liff.isInClient()
+          diag.searchAfterInit = location.search
+          showDiag()
+
+          if (!liff.isLoggedIn()) {
+            // 在 LINE 裡面開應該已經登入；在外部瀏覽器開才會走到這裡
+            diag.loginRedirect = true
+            showDiag()
+            liff.login()
+            return
+          }
+          mark('s-login', true, '確認登入狀態')
+
+          var token = liff.getIDToken()
+          if (!token) {
+            return fail('s-token', '取得身分憑證', '拿不到身分憑證。請確認 LIFF 設定的 Scopes 有勾「openid」。')
+          }
+          mark('s-token', true, '取得身分憑證')
+
+          // text/plain 不是打錯：application/json 會觸發 CORS 預檢，
+          // 而 Apps Script 不處理 OPTIONS，整個呼叫會失敗。
+          return fetch(BACKEND_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+            body: JSON.stringify({ action: 'verifyIdentity', idToken: token }),
+          })
+            .then(function (res) {
+              diag.backendHttp = res.status
+              return res.json()
+            })
+            .then(function (r) {
+              diag.verify = { ok: r.ok, code: r.code, ttlSeconds: r.ttlSeconds }
+              if (!r.ok) {
+                return fail('s-verify', '向 LINE 驗證', '驗證失敗（代碼 ' + r.code + '）：' + r.message)
+              }
+              mark('s-verify', true, '向 LINE 驗證')
+              diag.done = true
+              clearTimeout(watchdog)
+              document.getElementById('uid').textContent = r.userId
+              document.getElementById('result').className = 'box'
+              showDiag()
+            })
+            .catch(function (err) {
+              // 最可能是跨網域呼叫被瀏覽器擋掉 —— 這是這一版要驗證的第二件事
+              fail('s-verify', '向 LINE 驗證',
+                '連不到後端。請截圖下面的診斷資料給我。', err && err.message)
+            })
+        })
+        .catch(function (err) {
+          fail('s-init', '啟動 LINE 登入',
+            'LINE 登入啟動失敗。請截圖下面的診斷資料給我。', err && (err.code + ' ' + err.message))
+        })
+
+      var copying = false
+      document.getElementById('copy').addEventListener('click', function () {
+        if (copying) return          // 同步旗標擋連點（設計文件 §6）
+        copying = true
+        var text = document.getElementById('uid').textContent
+        var done = function () {
+          document.getElementById('copied').className = 'ok'
+          copying = false
+        }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(done, function () { fallbackCopy(text); done() })
+        } else {
+          fallbackCopy(text); done()
+        }
+      })
+
+      function fallbackCopy(text) {
+        var ta = document.createElement('textarea')
+        ta.value = text
+        document.body.appendChild(ta)
+        ta.select()
+        try { document.execCommand('copy') } catch (e) {}
+        document.body.removeChild(ta)
+      }
+    })()
+  </script>
+</body>
+</html>
