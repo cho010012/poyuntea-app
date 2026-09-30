@@ -81,6 +81,10 @@
        實機上老闆以為只有「台斤」可以選。選中的那顆整顆反黑。 */
     .units { margin: 0 0 var(--tap-gap); }
     .units button[aria-pressed="true"] { background: var(--ink); color: var(--paper); font-weight: bold; }
+    /* 商品也是一排按鍵（同樣的理由：進貨表單裡的商品原本是下拉選單）。約十項、
+       換行排列；名字很長時按鍵自己換行，最寬不超過一整列，不撐破 375px。
+       min-height 不是 height：換成兩行時按鍵跟著變高，上下留 8px 才不貼字。 */
+    .units button { max-width: 100%; padding-top: 8px; padding-bottom: 8px; overflow-wrap: anywhere; }
     pre { font-size: 14px; white-space: pre-wrap; background: #f3f3f3; padding: 8px; margin: 0; }
   </style>
 </head>
@@ -508,25 +512,21 @@
         var box = el('div', { cls: 'box' }, [el('p', { cls: 'item-name', text: '第 ' + (i + 1) + ' 行' })])
 
         box.appendChild(el('label', { text: '商品' }))
-        var pick = el('select')
-        pick.appendChild(el('option', { text: '請選商品' }))
-        pick.options[0].value = ''
+        var pickRow = el('div', { cls: 'units' })
         session.stock.items.forEach(function (it) {
-          var o = el('option', { text: it.name })
-          o.value = it.code
-          pick.appendChild(o)
+          var b = button(it.name, function () {
+            if (ln.code === it.code) return   // 再點一次已經選的，什麼都不變（單位也不要被洗回預設）
+            ln.code = it.code
+            var units = it.purchaseUnits
+            ln.unit = units.indexOf('台斤') !== -1 ? '台斤' : (units[0] || '')
+            edited()
+            renderForm(true)   // 單位那一排跟著商品變
+          })
+          b.setAttribute('aria-pressed', String(it.code === ln.code))
+          b.disabled = locked
+          pickRow.appendChild(b)
         })
-        pick.value = ln.code
-        pick.disabled = locked
-        pick.addEventListener('change', function () {
-          ln.code = pick.value
-          var p = productOf(ln.code)
-          var units = p ? p.purchaseUnits : []
-          ln.unit = units.indexOf('台斤') !== -1 ? '台斤' : (units[0] || '')
-          edited()
-          renderForm(true)   // 單位選單跟著商品變
-        })
-        box.appendChild(pick)
+        box.appendChild(pickRow)
 
         box.appendChild(el('label', { text: '放在哪一格' }))
         var bin = el('input')
@@ -805,7 +805,7 @@
         var reviewButtons = []
         if (owner && d.status === 'PENDING' && d.docType === 'PURCHASE') {
           var pass = button('通過（庫存加上去）', function () { review(r, pass, reviewButtons) }, 'primary')
-          var back = button('退回', function () { showRejectForm(r, '') })
+          var back = button('退回', function () { rejectDraft = null; showRejectForm(r, '') })
           reviewButtons.push(pass, back)
           parts.push(pass, back)
         }
@@ -845,13 +845,22 @@
         })
       }
 
+      // 退回原因打到一半的內容。跟進貨表單一樣放在狀態物件裡：B6、L1 之後畫面會重畫，
+      // 每次都建一個新的空框的話，他打好的原因會被清掉、要整段重打。
+      // 從「退回」按鍵進來時才清空（每一次新的退回都從空白開始）。
+      var rejectDraft = null
+
       /** 退回要寫原因（必填，100 字以內），送單的人會看到。 */
       function showRejectForm(r, message) {
         begin()
         clearTimeout(watchdog)
         var d = r.doc
+        if (rejectDraft === null || rejectDraft.docNo !== d.docNo) rejectDraft = { docNo: d.docNo, text: '' }
+        var draft = rejectDraft
         var reason = el('textarea')
         reason.maxLength = 100
+        reason.value = draft.text
+        reason.addEventListener('input', function () { draft.text = reason.value })
         var note = el('p', { cls: 'bad', text: message })
         var busy = false
         var confirm = button('確定退回', function () {
