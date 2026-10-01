@@ -126,25 +126,34 @@ var Core = (() => {
   // src/core/index.js
   var index_exports = {};
   __export(index_exports, {
+    DISPLAY_UNITS: () => DISPLAY_UNITS,
+    PERIOD_KINDS: () => PERIOD_KINDS,
     PURCHASE_UNITS: () => PURCHASE_UNITS,
     SALE_UNITS: () => SALE_UNITS,
     adjustDelta: () => adjustDelta,
     availableQty: () => availableQty,
     avgCostFenPerQuote: () => avgCostFenPerQuote,
     baseQtyOf: () => baseQtyOf,
+    costEvents: () => costEvents,
+    costOfOutflows: () => costOfOutflows,
     describeQty: () => describeQty,
     fenToYuanText: () => fenToYuanText,
     isLooseTeaScale: () => isLooseTeaScale,
     lineAmountFen: () => lineAmountFen,
+    marginText: () => marginText,
     moveLegs: () => moveLegs,
     nextDocNo: () => nextDocNo,
     normalizeBinCode: () => normalizeBinCode,
     onBookQty: () => onBookQty,
     onBookQtyInBin: () => onBookQtyInBin,
+    periodRange: () => periodRange,
+    profitReport: () => profitReport,
+    qtyInUnit: () => qtyInUnit,
     sortBinCodes: () => sortBinCodes,
     stockByBin: () => stockByBin,
     stockSummary: () => stockSummary,
     stockValue: () => stockValue,
+    taipeiDateOf: () => taipeiDateOf,
     toBaseQty: () => toBaseQty,
     unitPriceFenFromAmount: () => unitPriceFenFromAmount,
     validatePurchaseLine: () => validatePurchaseLine,
@@ -188,6 +197,21 @@ var Core = (() => {
     if (baseQty % 6e3 === 0) return `${baseQty / 6e3} 台斤`;
     if (baseQty % 375 === 0) return `${baseQty / 375} 兩`;
     return `${baseQty / 10} 公克`;
+  }
+  var DISPLAY_UNITS = Object.freeze(["台斤", "兩", "公克"]);
+  function qtyInUnit(baseQty, unit) {
+    if (DISPLAY_UNITS.indexOf(unit) === -1) throw new Error(`不認得的單位：${unit}`);
+    if (typeof baseQty !== "number" || !Number.isSafeInteger(baseQty) || baseQty <= 0) return null;
+    const scaled = baseQty * 100;
+    if (!Number.isSafeInteger(scaled)) return null;
+    const factor = FACTORS[unit];
+    const hundredths = Math.round(scaled / factor);
+    if (hundredths === 0) return { text: `不到 0.01 ${unit}`, approx: true };
+    const whole = Math.floor(hundredths / 100);
+    const frac = hundredths % 100;
+    const digits = frac === 0 ? "" : "." + (frac % 10 === 0 ? String(frac / 10) : String(frac).padStart(2, "0"));
+    const text = `${whole}${digits} ${unit}`;
+    return scaled % factor === 0 ? { text, approx: false } : { text: `約 ${text}`, approx: true };
   }
 
   // src/core/money.js
@@ -458,7 +482,7 @@ var Core = (() => {
     }
     return n;
   }
-  function stockValue(moves, productCode) {
+  function replay_(moves, productCode, onEvent) {
     const mine = moves.filter((m) => m.productCode === productCode).slice().sort((a, b) => {
       var _a, _b;
       return num((_a = a.seq) != null ? _a : 0, "異動序號") - num((_b = b.seq) != null ? _b : 0, "異動序號");
@@ -473,6 +497,7 @@ var Core = (() => {
         const add = qtyBase > 0 ? Math.round(totalCostFen * delta / qtyBase) : 0;
         totalCostFen += add;
         qtyBase += delta;
+        onEvent({ kind: "avg", seq: m.seq, costFen: add });
         continue;
       }
       if (delta > 0) {
@@ -481,26 +506,277 @@ var Core = (() => {
         }
         const cost = num(m.costFen, "進貨成本");
         if (cost < 0) throw new Error("進貨成本不能是負數");
-        if (qtyBase <= 0) totalCostFen = 0;
+        if (qtyBase <= 0) {
+          if (totalCostFen !== 0) onEvent({ kind: "reset", seq: m.seq, costFen: totalCostFen });
+          totalCostFen = 0;
+        }
         totalCostFen += cost;
         qtyBase += delta;
+        onEvent({ kind: "in", seq: m.seq, costFen: cost });
         continue;
       }
       if (delta < 0) {
         const out = -delta;
+        let taken = 0;
         if (qtyBase > 0) {
-          const taken = Math.round(totalCostFen * Math.min(out, qtyBase) / qtyBase);
+          taken = Math.round(totalCostFen * Math.min(out, qtyBase) / qtyBase);
           totalCostFen -= taken;
         }
+        const shortBase = qtyBase > 0 ? Math.max(0, out - qtyBase) : out;
         qtyBase -= out;
+        onEvent({
+          kind: "out",
+          seq: m.seq,
+          docNo: m.docNo,
+          lineSeq: m.lineSeq,
+          productCode: m.productCode,
+          deltaBase: delta,
+          costFen: taken,
+          shortBase
+        });
       }
     }
     return { qtyBase, totalCostFen };
+  }
+  function ignore_() {
+  }
+  function stockValue(moves, productCode) {
+    return replay_(moves, productCode, ignore_);
+  }
+  function costEvents(moves, productCode) {
+    const events = [];
+    replay_(moves, productCode, function(e) {
+      events.push(e);
+    });
+    return events;
+  }
+  function costOfOutflows(moves, productCode) {
+    return costEvents(moves, productCode).filter((e) => e.kind === "out").map((e) => ({
+      seq: e.seq,
+      docNo: e.docNo,
+      lineSeq: e.lineSeq,
+      productCode: e.productCode,
+      deltaBase: e.deltaBase,
+      costFen: e.costFen,
+      shortBase: e.shortBase
+    }));
   }
   function avgCostFenPerQuote(value, product) {
     if (value.qtyBase <= 0) return 0;
     const quoteQty = isLooseTeaScale(product.stockUnitScale) ? value.qtyBase / BASE_PER_TAIJIN2 : value.qtyBase;
     return Math.round(value.totalCostFen / quoteQty);
+  }
+
+  // src/core/period.js
+  var TAIPEI_OFFSET_MS = 8 * 60 * 60 * 1e3;
+  var DAY_MS = 24 * 60 * 60 * 1e3;
+  var PERIOD_KINDS = Object.freeze(["thisWeek", "thisMonth", "thisYear", "lastWeek", "lastMonth", "custom"]);
+  var MAX_DAYS = 1096;
+  var MIN_YEAR = 2020;
+  var MAX_YEAR = 2100;
+  var DATE_SHAPE = /^\d{4}-\d{2}-\d{2}$/;
+  function badPeriod() {
+    return new Error("期間的日期不對");
+  }
+  function pad(n, width) {
+    return String(n).padStart(width, "0");
+  }
+  function dateText(dayMs) {
+    const d = new Date(dayMs);
+    return pad(d.getUTCFullYear(), 4) + "-" + pad(d.getUTCMonth() + 1, 2) + "-" + pad(d.getUTCDate(), 2);
+  }
+  function range(firstDay, lastDay) {
+    return {
+      from: new Date(firstDay - TAIPEI_OFFSET_MS).toISOString(),
+      to: new Date(lastDay + DAY_MS - TAIPEI_OFFSET_MS).toISOString(),
+      fromDate: dateText(firstDay),
+      toDate: dateText(lastDay)
+    };
+  }
+  function parseDay(s) {
+    if (typeof s !== "string" || s.length > 10 || !DATE_SHAPE.test(s)) throw badPeriod();
+    const y = Number(s.slice(0, 4));
+    const m = Number(s.slice(5, 7));
+    const d = Number(s.slice(8, 10));
+    if (y < MIN_YEAR || y > MAX_YEAR) throw badPeriod();
+    const day = Date.UTC(y, m - 1, d);
+    if (dateText(day) !== s) throw badPeriod();
+    return day;
+  }
+  function periodRange(kind, nowMs, startDate, endDate) {
+    if (typeof kind !== "string" || PERIOD_KINDS.indexOf(kind) === -1) throw badPeriod();
+    if (kind === "custom") {
+      const first = parseDay(startDate);
+      const last = parseDay(endDate);
+      if (first > last) throw badPeriod();
+      if ((last - first) / DAY_MS + 1 > MAX_DAYS) throw badPeriod();
+      return range(first, last);
+    }
+    if (typeof nowMs !== "number" || !Number.isFinite(nowMs)) throw badPeriod();
+    const t = new Date(nowMs + TAIPEI_OFFSET_MS);
+    const y = t.getUTCFullYear();
+    const m = t.getUTCMonth();
+    const today = Date.UTC(y, m, t.getUTCDate());
+    const sinceMonday = (t.getUTCDay() + 6) % 7;
+    const monday = today - sinceMonday * DAY_MS;
+    if (kind === "thisWeek") return range(monday, today);
+    if (kind === "lastWeek") return range(monday - 7 * DAY_MS, monday - DAY_MS);
+    if (kind === "thisMonth") return range(Date.UTC(y, m, 1), Date.UTC(y, m + 1, 1) - DAY_MS);
+    if (kind === "lastMonth") return range(Date.UTC(y, m - 1, 1), Date.UTC(y, m, 1) - DAY_MS);
+    return range(Date.UTC(y, 0, 1), Date.UTC(y + 1, 0, 1) - DAY_MS);
+  }
+  function taipeiDateOf(iso) {
+    if (typeof iso !== "string") return "";
+    const ms = Date.parse(iso);
+    if (!Number.isFinite(ms)) return "";
+    return dateText(ms + TAIPEI_OFFSET_MS);
+  }
+
+  // src/core/report.js
+  var STAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+  function isMoney(v) {
+    return typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
+  }
+  function stampMs(v) {
+    if (typeof v !== "string" || !STAMP.test(v)) return null;
+    const ms = Date.parse(v);
+    return Number.isFinite(ms) ? ms : null;
+  }
+  function keyOf(docNo, lineSeq) {
+    return docNo + "\0" + lineSeq;
+  }
+  function qtyTextOf(baseQty, product) {
+    if (product === void 0) return String(baseQty);
+    return describeQty(baseQty, product.stockUnitScale, product.baseUnit);
+  }
+  function newestFirst(a, b) {
+    if (a.reviewedAt !== b.reviewedAt) return a.reviewedAt < b.reviewedAt ? 1 : -1;
+    return a.docNo < b.docNo ? 1 : a.docNo > b.docNo ? -1 : 0;
+  }
+  function marginText(profitFen, revenueFen) {
+    if (!(revenueFen > 0)) return "—";
+    const permille = Math.round(profitFen * 1e3 / revenueFen);
+    const abs = Math.abs(permille);
+    const whole = Math.floor(abs / 10);
+    const frac = abs % 10;
+    return (permille < 0 ? "-" : "") + whole + (frac === 0 ? "" : "." + frac) + "%";
+  }
+  function profitReport({ docs, lines, outflows, products, names, from, to, maxDocs }) {
+    const fromMs = Date.parse(from);
+    const toMs = Date.parse(to);
+    if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) throw new Error("報表的期間不對");
+    if (!Array.isArray(outflows)) throw new Error("報表少了出庫成本");
+    const headCount = /* @__PURE__ */ new Map();
+    for (const d of docs) headCount.set(d.docNo, (headCount.get(d.docNo) || 0) + 1);
+    const linesByDoc = /* @__PURE__ */ new Map();
+    for (const l of lines) {
+      if (!linesByDoc.has(l.docNo)) linesByDoc.set(l.docNo, []);
+      linesByDoc.get(l.docNo).push(l);
+    }
+    const outByLine = /* @__PURE__ */ new Map();
+    for (const o of outflows) {
+      const k = keyOf(o.docNo, o.lineSeq);
+      if (!outByLine.has(k)) outByLine.set(k, []);
+      outByLine.get(k).push(o);
+    }
+    const totals = { revenueFen: 0, costFen: 0 };
+    const byProduct = /* @__PURE__ */ new Map();
+    const docRows = [];
+    const gifts = [];
+    const unmatchedLines = [];
+    const shortLines = [];
+    let giftCostFen = 0;
+    let undatedDocs = 0;
+    const seen = /* @__PURE__ */ new Set();
+    for (const d of docs) {
+      if (d.docType !== "SALE" || d.status !== "POSTED") continue;
+      const at = stampMs(d.reviewedAt);
+      if (at === null) {
+        undatedDocs++;
+        continue;
+      }
+      if (!(at >= fromMs && at < toMs)) continue;
+      if (seen.has(d.docNo)) continue;
+      seen.add(d.docNo);
+      const mine = (linesByDoc.get(d.docNo) || []).slice().sort((a, b) => Number(a.seq) - Number(b.seq));
+      if (headCount.get(d.docNo) > 1) {
+        for (const l of mine) unmatchedLines.push({ docNo: d.docNo, lineSeq: l.seq, reason: "duplicateDoc" });
+        continue;
+      }
+      if (!(Number.isSafeInteger(d.lineCount) && mine.length === d.lineCount)) {
+        if (mine.length === 0) unmatchedLines.push({ docNo: d.docNo, lineSeq: null, reason: "lineCount" });
+        for (const l of mine) unmatchedLines.push({ docNo: d.docNo, lineSeq: l.seq, reason: "lineCount" });
+        continue;
+      }
+      const seqCount = /* @__PURE__ */ new Map();
+      for (const l of mine) seqCount.set(l.seq, (seqCount.get(l.seq) || 0) + 1);
+      const row = { docNo: d.docNo, reviewedAt: d.reviewedAt, reviewedDate: taipeiDateOf(d.reviewedAt), createdByName: names(d.createdBy), revenueFen: 0, costFen: 0 };
+      for (const l of mine) {
+        const reason = problemOf(l, seqCount, outByLine);
+        if (reason !== null) {
+          unmatchedLines.push({ docNo: d.docNo, lineSeq: l.seq, reason });
+          continue;
+        }
+        const o = outByLine.get(keyOf(l.docNo, l.seq))[0];
+        const product = products.get(l.productCode);
+        row.revenueFen += l.amountFen;
+        row.costFen += o.costFen;
+        totals.revenueFen += l.amountFen;
+        totals.costFen += o.costFen;
+        if (!byProduct.has(l.productCode)) {
+          byProduct.set(l.productCode, { productCode: l.productCode, name: product === void 0 ? l.productCode : product.name, qtyBase: 0, revenueFen: 0, costFen: 0 });
+        }
+        const p = byProduct.get(l.productCode);
+        p.qtyBase += l.baseQty;
+        p.revenueFen += l.amountFen;
+        p.costFen += o.costFen;
+        if (l.isGift === true) {
+          gifts.push({ docNo: d.docNo, lineSeq: l.seq, productCode: l.productCode, name: p.name, baseQty: l.baseQty, qtyText: qtyTextOf(l.baseQty, product), costFen: o.costFen });
+          giftCostFen += o.costFen;
+        }
+        if (o.shortBase > 0) {
+          shortLines.push({ docNo: d.docNo, lineSeq: l.seq, productCode: l.productCode, shortBase: o.shortBase });
+        }
+      }
+      docRows.push(row);
+    }
+    const profitFen = totals.revenueFen - totals.costFen;
+    const products_ = [...byProduct.values()].map((p) => ({
+      productCode: p.productCode,
+      name: p.name,
+      qtyBase: p.qtyBase,
+      qtyText: qtyTextOf(p.qtyBase, products.get(p.productCode)),
+      revenueFen: p.revenueFen,
+      costFen: p.costFen,
+      profitFen: p.revenueFen - p.costFen
+    })).sort((a, b) => b.profitFen - a.profitFen || (a.productCode < b.productCode ? -1 : a.productCode > b.productCode ? 1 : 0));
+    docRows.sort(newestFirst);
+    return {
+      totals: { revenueFen: totals.revenueFen, costFen: totals.costFen, profitFen, docCount: docRows.length, marginText: marginText(profitFen, totals.revenueFen) },
+      byProduct: products_,
+      docs: docRows.slice(0, maxDocs).map((r) => ({ ...r, profitFen: r.revenueFen - r.costFen })),
+      docTotal: docRows.length,
+      gifts: gifts.sort(newestFirstGift(docRows)),
+      giftCostFen,
+      unmatchedLines,
+      shortLines,
+      undatedDocs
+    };
+  }
+  function newestFirstGift(docRows) {
+    const rank = new Map(docRows.map((r, i) => [r.docNo, i]));
+    return (a, b) => rank.get(a.docNo) - rank.get(b.docNo) || a.lineSeq - b.lineSeq;
+  }
+  function problemOf(l, seqCount, outByLine) {
+    if (seqCount.get(l.seq) > 1) return "duplicate";
+    if (!isMoney(l.amountFen)) return "amount";
+    const found = outByLine.get(keyOf(l.docNo, l.seq)) || [];
+    if (found.length === 0) return "noOutflow";
+    if (found.length > 1) return "duplicate";
+    const o = found[0];
+    if (o.productCode !== l.productCode) return "product";
+    if (typeof l.baseQty !== "number" || -o.deltaBase !== l.baseQty) return "qty";
+    return null;
   }
   return __toCommonJS(index_exports);
 })();
@@ -570,6 +846,8 @@ var Core = (() => {
 
       /** keepScroll：表單裡改了商品、加減一行時重畫，不可以把他正在填的第 5 行捲走。 */
       function render(children, keepScroll) {
+        // 任何一次重畫都代表離開了報表畫面（報表畫面自己重畫完才設回 true）
+        showingProfit = false
         var app = document.getElementById('app')
         while (app.firstChild) app.removeChild(app.firstChild)
         app.appendChild(el('h1', { text: '柏雲茶帳本' }))
@@ -789,6 +1067,8 @@ var Core = (() => {
         parts.push(button('進貨', function () { openPurchase() }, 'wide'))
         parts.push(button('庫存', function () { openStock() }, 'wide'))
         parts.push(button(owner ? '待複核' : '我送出的單', function () { openList() }, 'wide'))
+        // 成本與利潤只有老闆看得到（後端對店長回 P1）。店長的首頁根本沒有這顆鍵
+        if (owner) parts.push(button('利潤', function () { openProfit() }, 'wide'))
         parts.push(el('div', { text: '' }))
         parts.push(reloadButton())
         render(parts)
@@ -810,25 +1090,81 @@ var Core = (() => {
         }).catch(netFailed(t, '連不到店裡的系統。請確認網路之後再試一次。', [button('再試一次', function () { openStock() }), homeButton()]))
       }
 
-      function showStock(r) {
+      // ---- 庫存的顯示單位（利潤報表計畫 B）----
+      //
+      // 散茶的數量預設用台斤講，可以切到兩或公克。記在這支手機的 localStorage（鍵名固定）：
+      // 只有這一個鍵，存的只是三個字之一。讀回來的值**必須在白名單裡**，不然用台斤 ——
+      // 那一格是這支手機上任何人都改得到的。讀寫失敗（私密瀏覽、空間不能用）也用台斤。
+
+      var UNIT_KEY = 'poyuntea-stock-unit'
+      var stockUnit = null
+
+      function unitNow() {
+        if (stockUnit !== null) return stockUnit
+        var saved = null
+        try { saved = localStorage.getItem(UNIT_KEY) } catch (e) {}
+        stockUnit = Core.DISPLAY_UNITS.indexOf(saved) !== -1 ? saved : '台斤'
+        return stockUnit
+      }
+
+      function chooseUnit(u) {
+        if (Core.DISPLAY_UNITS.indexOf(u) === -1) return
+        stockUnit = u
+        try { localStorage.setItem(UNIT_KEY, u) } catch (e) {}
+      }
+
+      /**
+       * 散茶的一個量講成選的單位。≤ 0 或壞掉（Core.qtyInUnit 回 null）就用 fallback ——
+       * 既有的那幾句（「沒有庫存」「現在沒有可以賣的」「數量有問題」），不顯示負數。
+       * 後端還沒更新、沒帶基本單位的數量時，用後端原本的字。
+       */
+      function looseText(base, fallback, serverText) {
+        if (typeof base !== 'number') return serverText
+        var q = Core.qtyInUnit(base, unitNow())
+        return q === null ? fallback : q.text
+      }
+
+      function unitPicker(r) {
+        var row = el('div', { cls: 'units' })
+        Core.DISPLAY_UNITS.forEach(function (u) {
+          var b = button(u, function () {
+            if (u === unitNow()) return
+            chooseUnit(u)
+            showStock(r, true)
+          })
+          b.setAttribute('aria-pressed', String(u === unitNow()))
+          row.appendChild(b)
+        })
+        return row
+      }
+
+      function showStock(r, keepScroll) {
         clearTimeout(watchdog)
         session.stock = r
         var owner = r.role === 'OWNER'
         var parts = [el('h2', { text: '庫存' })]
+
+        parts.push(el('label', { text: '散茶的數量用什麼單位看' }))
+        parts.push(unitPicker(r))
 
         parts.push(el('h2', { text: '每一種茶' }))
         if (r.items.length === 0) {
           parts.push(el('p', { text: '還沒有任何商品。請在試算表的「商品」分頁加一列。' }))
         }
         r.items.forEach(function (it) {
+          // 計件商品不受單位切換影響（「10 罐」就是 10 罐）
+          var loose = Core.isLooseTeaScale(it.stockUnitScale)
+          var onBook = it.isEmpty ? '沒有庫存' : (loose ? looseText(it.onBookBase, '數量有問題', it.onBookText) : it.onBookText)
           var lines = [
             el('div', { cls: 'item-name', text: it.name }),
             // 帳上是 0 就講「沒有庫存」—— 「0 公克」讓人以為是一個真的量
-            el('div', { cls: 'num', text: it.isEmpty ? '沒有庫存' : it.onBookText }),
+            el('div', { cls: 'num', text: onBook }),
           ]
           // 可賣跟帳上不同時才講 —— 相同的話多一行只是讓人分心
-          if (it.availableText !== it.onBookText) {
-            lines.push(el('div', { text: '其中可以賣的：' + it.availableText + '（有單子還在等複核）' }))
+          var differs = loose && typeof it.onBookBase === 'number' ? it.availableBase !== it.onBookBase : it.availableText !== it.onBookText
+          if (differs) {
+            var avail = loose ? looseText(it.availableBase, '現在沒有可以賣的', it.availableText) : it.availableText
+            lines.push(el('div', { text: '其中可以賣的：' + avail + '（有單子還在等複核）' }))
           }
           if (owner) {
             // 從來沒進過貨就講「還沒進貨」—— 「每台斤 0 元」會被當成真的價錢
@@ -851,13 +1187,19 @@ var Core = (() => {
             parts.push(el('div', { cls: 'bin', text: b.binCode }))
             lastBin = b.binCode
           }
-          parts.push(el('div', { text: b.name + '　' + b.qtyText }))
+          var product = productOf(b.code)
+          var loose = product !== null && Core.isLooseTeaScale(product.stockUnitScale)
+          parts.push(el('div', { text: b.name + '　' + (loose ? looseText(b.qtyBase, '數量有問題', b.qtyText) : b.qtyText) }))
+          // 這一格有被待複核銷貨佔住的量時，也講可以賣多少（跟「每一種茶」一樣跟著單位切換）
+          if (loose && typeof b.qtyBase === 'number' && b.availableBase !== b.qtyBase) {
+            parts.push(el('div', { cls: 'muted', text: '其中可以賣的：' + looseText(b.availableBase, '現在沒有可以賣的', b.availableText) }))
+          }
         })
 
         parts.push(el('div', { text: '' }))
         parts.push(homeButton())
         parts.push(button('重新整理', function () { openStock() }))
-        render(parts)
+        render(parts, keepScroll)
       }
 
       // ---- 進貨 ----
@@ -1553,15 +1895,23 @@ var Core = (() => {
 
       // ---- 單據明細 ----
 
-      function openDoc(docNo) {
+      // 從哪裡點進單據明細的：null = 清單；從利潤報表點進去時是一個「回利潤報表」鍵的產生器
+      var docBack = null
+
+      function backFromDoc() {
+        return docBack ? docBack() : listButton()
+      }
+
+      function openDoc(docNo, back) {
+        docBack = back || null
         var t = begin()
         showLoading()
         call('getDoc', { docNo: docNo }).then(function (r) {
           if (!current(t)) return
           if (r.ok) return showDoc(r, '')
           if (handledAuth(r)) return
-          showError(messageOf(r), [listButton(), homeButton()])
-        }).catch(netFailed(t, null, [listButton(), homeButton()]))
+          showError(messageOf(r), [backFromDoc(), homeButton()])
+        }).catch(netFailed(t, null, [backFromDoc(), homeButton()]))
       }
 
       function showDoc(r, note) {
@@ -1602,7 +1952,7 @@ var Core = (() => {
           reviewButtons.push(pass, back)
           parts.push(pass, back)
         }
-        parts.push(listButton())
+        parts.push(backFromDoc())
         parts.push(homeButton())
         render(parts)
       }
@@ -1710,6 +2060,213 @@ var Core = (() => {
           listButton(),
           homeButton(),
         ])
+      }
+
+      // ---- 利潤報表（只有老闆；利潤報表計畫 A） ----
+      //
+      // **報表只存在畫面上與記憶體裡**（P3-8、T8）：結果與任何金額都不寫進 localStorage／
+      // sessionStorage／IndexedDB，也不送進診斷面板（log 只記代碼與耗時）。離開報表畫面
+      // （回首頁、去別的畫面）時 render 會把它整個換掉；記憶體裡只留「上次選的期間」，
+      // 從單據明細按「回利潤報表」時重新向後端要一次。
+      //
+      // 手機收起來、切到別的頁面時（pagehide）也先把報表從畫面上拿掉：瀏覽器可能把整頁
+      // 凍結起來，按上一頁回來時原樣還原（bfcache）—— 那樣報表就會從「上一頁」回來。
+
+      var PERIODS = [['thisWeek', '本週'], ['thisMonth', '本月'], ['thisYear', '今年'], ['lastWeek', '上週'], ['lastMonth', '上個月'], ['custom', '自訂']]
+      var showingProfit = false
+      var hiddenProfit = false
+      // 自訂期間打到一半的兩個日期（只有日期，不是報表內容）：「看報表」被擋下時不用重打
+      var customDraft = { start: '', end: '' }
+
+      window.addEventListener('pagehide', function () {
+        if (!showingProfit) return
+        hiddenProfit = true
+        begin()
+        render([el('p', { cls: 'muted', text: '報表已經關掉了。' }), homeButton()])
+      })
+      window.addEventListener('pageshow', function (e) {
+        if (e.persisted && hiddenProfit) {
+          hiddenProfit = false
+          goHome()
+        }
+      })
+
+      function periodButton() {
+        return button('換一個期間', function () { openProfit() })
+      }
+
+      function openProfit() {
+        begin()
+        clearTimeout(watchdog)
+        var row = el('div', { cls: 'units' })
+        PERIODS.forEach(function (p) {
+          row.appendChild(button(p[1], function () {
+            if (p[0] === 'custom') return showCustomPeriod('')
+            runProfit({ kind: p[0] })
+          }))
+        })
+        render([
+          el('h2', { text: '利潤' }),
+          el('p', { text: '選一個期間。' }),
+          row,
+          el('p', { cls: 'muted', text: '只算老闆按「通過」那天落在期間裡的銷貨單。日期一律台北時間。' }),
+          homeButton(),
+        ])
+      }
+
+      /**
+       * 打的日期 → 'YYYY-MM-DD'；看不懂或不存在的日期回 null。
+       * 收「2026-10-01」「2026/10/1」「20261001」（手機的數字鍵盤打不出橫線）。
+       * 日期合不合法交給 Core.periodRange（跟後端同一份規則：擋 2/30、年份 2020–2100）。
+       */
+      function dayOf(text) {
+        var s = halfWidth(text).replace(/[－/／.]/g, '-')
+        if (/^\d{8}$/.test(s)) s = s.slice(0, 4) + '-' + s.slice(4, 6) + '-' + s.slice(6)
+        var m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(s)
+        if (!m) return null
+        var day = m[1] + '-' + (m[2].length < 2 ? '0' + m[2] : m[2]) + '-' + (m[3].length < 2 ? '0' + m[3] : m[3])
+        try {
+          Core.periodRange('custom', 0, day, day)
+        } catch (e) {
+          return null
+        }
+        return day
+      }
+
+      function showCustomPeriod(message) {
+        begin()
+        clearTimeout(watchdog)
+        var draft = customDraft
+        function dateBox(value, onInput) {
+          var box = el('input', { cls: 'num-input' })
+          box.type = 'text'
+          box.inputMode = 'numeric'
+          box.placeholder = '例如 20261001'
+          box.value = value
+          box.addEventListener('input', function () { onInput(box.value) })
+          return box
+        }
+        var start = dateBox(draft.start, function (v) { draft.start = v })
+        var end = dateBox(draft.end, function (v) { draft.end = v })
+        var note = el('p', { cls: 'bad', text: message })
+        var go = button('看報表', function () {
+          var a = dayOf(start.value)
+          var b = dayOf(end.value)
+          if (a === null || b === null) { note.textContent = '日期要寫成 2026-10-01 或 20261001，而且要是真的有的日子（2020 到 2100 年）。'; return }
+          if (a > b) { note.textContent = '「起」不可以晚於「訖」，請改一下。'; return }
+          try {
+            Core.periodRange('custom', 0, a, b)
+          } catch (e) {
+            note.textContent = '一次最多看三年，請把期間縮短一點。'
+            return
+          }
+          runProfit({ kind: 'custom', startDate: a, endDate: b })
+        }, 'primary')
+        render([
+          el('h2', { text: '自訂期間' }),
+          el('label', { text: '起' }),
+          start,
+          el('label', { text: '訖（這一天也算進去）' }),
+          end,
+          note,
+          go,
+          periodButton(),
+          homeButton(),
+        ])
+      }
+
+      function runProfit(ask) {
+        var t = begin()
+        var t0 = Date.now()
+        showLoading('正在算利潤…')
+        var again = function () { return button('再試一次', function () { runProfit(ask) }) }
+        call('profitReport', ask).then(function (r) {
+          if (!current(t)) return
+          // 只記代碼與耗時（P3-8）：不記任何金額、不記回應內容
+          log({ step: 'profit', ok: r.ok, code: r.code, ms: Date.now() - t0 })
+          if (r.ok) return showProfit(r, ask)
+          if (handledAuth(r)) return
+          showError(messageOf(r), [periodButton(), homeButton()])
+        }).catch(netFailed(t, null, [again(), periodButton(), homeButton()]))
+      }
+
+      /** 「營收 3000 元」這種一行。數字用大字。 */
+      function moneyRow(label, text) {
+        return el('div', {}, [el('span', { text: label + ' ' }), el('span', { cls: 'num', text: text }), el('span', { text: ' 元' })])
+      }
+
+      function showProfit(r, ask) {
+        clearTimeout(watchdog)
+        var parts = [
+          el('h2', { text: '利潤' }),
+          el('p', { cls: 'num', text: r.period.fromDate + ' 到 ' + r.period.toDate }),
+          el('p', { cls: 'muted', text: '報表只算已通過的銷貨單（以老闆按「通過」那天為準）；退回的單、還在等複核的單、盤點的損耗不在裡面。' }),
+        ]
+
+        // 提示區：只有在有的時候出現（P3-1、P3-2、P3-5）
+        var notes = []
+        if (r.unmatchedCount > 0) notes.push('有 ' + r.unmatchedCount + ' 項找不到成本，沒有算進來。')
+        if (r.shortCount > 0) notes.push('有 ' + r.shortCount + ' 項是在帳上不夠的時候賣出的，成本少算了。')
+        if (r.undatedCount > 0) notes.push('有 ' + r.undatedCount + ' 張已通過的單日期看不懂，沒有算進來。')
+        if (notes.length > 0) {
+          parts.push(el('div', { cls: 'box alert' }, notes.map(function (n) { return el('p', { cls: 'bad', text: n }) })
+            .concat([el('p', { text: '請找開發人員。' })])))
+        }
+
+        var t = r.totals
+        parts.push(el('h2', { text: '合計' }))
+        parts.push(el('div', { cls: 'box' }, [
+          moneyRow('營收', t.revenueText),
+          moneyRow('成本', t.costText),
+          moneyRow('利潤', t.profitText),
+          el('div', {}, [el('span', { text: '毛利率 ' }), el('span', { cls: 'num', text: t.marginText })]),
+          el('div', { text: '共 ' + t.docCount + ' 張單' }),
+        ]))
+        parts.push(el('p', { cls: 'muted', text: '毛利率是利潤 ÷ 營收。送出去的贈品沒有營收，但它的成本算在利潤裡。' }))
+
+        parts.push(el('h2', { text: '每種茶' }))
+        if (r.byProduct.length === 0) parts.push(el('p', { text: '這段期間沒有賣出任何東西。' }))
+        r.byProduct.forEach(function (p) {
+          parts.push(el('div', { cls: 'item' }, [
+            el('div', { cls: 'item-name', text: p.name }),
+            el('div', { text: '出去了 ' + p.qtyText + '（含送的）' }),
+            el('div', { text: '營收 ' + p.revenueText + ' 元　成本 ' + p.costText + ' 元' }),
+            el('div', { cls: 'num', text: '利潤 ' + p.profitText + ' 元' }),
+          ]))
+        })
+
+        parts.push(el('h2', { text: '每一張單' }))
+        if (r.docTotal === 0) parts.push(el('p', { text: '這段期間沒有通過的銷貨單。' }))
+        if (r.docTotal > r.docs.length) {
+          parts.push(el('p', { cls: 'muted', text: '共 ' + r.docTotal + ' 張，只列出最新 ' + r.docs.length + ' 張（上面的合計與每種茶算的是全部）。' }))
+        }
+        var back = function () { return button('回利潤報表', function () { runProfit(ask) }) }
+        r.docs.forEach(function (d) {
+          var b = button('', function () { openDoc(d.docNo, back) }, 'wide')
+          b.appendChild(el('div', { cls: 'num', text: d.docNo }))
+          b.appendChild(el('div', { text: '通過 ' + d.reviewedDate + '　' + d.createdByName }))
+          b.appendChild(el('div', { text: '營收 ' + d.revenueText + ' 元　成本 ' + d.costText + ' 元' }))
+          b.appendChild(el('div', { text: '利潤 ' + d.profitText + ' 元' }))
+          parts.push(b)
+        })
+
+        parts.push(el('h2', { text: '贈品' }))
+        if (r.gifts.length === 0) {
+          parts.push(el('p', { text: '這段期間沒有送出任何東西。' }))
+        } else {
+          r.gifts.forEach(function (g) {
+            parts.push(el('div', { cls: 'item' }, [
+              el('div', { cls: 'item-name', text: g.name }),
+              el('div', { text: g.qtyText + '　成本 ' + g.costText + ' 元（' + g.docNo + '）' }),
+            ]))
+          })
+          parts.push(el('div', { cls: 'box' }, [moneyRow('贈品成本合計', r.giftCostText), el('p', { cls: 'muted', text: '已經算在上面的成本與利潤裡。' })]))
+        }
+
+        parts.push(periodButton())
+        parts.push(homeButton())
+        render(parts)
+        showingProfit = true
       }
 
       // ---- 身分憑證過期 ----
