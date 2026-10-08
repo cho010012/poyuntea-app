@@ -134,6 +134,7 @@ var Core = (() => {
     availableQty: () => availableQty,
     avgCostFenPerQuote: () => avgCostFenPerQuote,
     baseQtyOf: () => baseQtyOf,
+    bookAsOfCount: () => bookAsOfCount,
     costEvents: () => costEvents,
     costOfOutflows: () => costOfOutflows,
     describeQty: () => describeQty,
@@ -156,6 +157,8 @@ var Core = (() => {
     taipeiDateOf: () => taipeiDateOf,
     toBaseQty: () => toBaseQty,
     unitPriceFenFromAmount: () => unitPriceFenFromAmount,
+    validateCountLine: () => validateCountLine,
+    validateMoveLine: () => validateMoveLine,
     validatePurchaseLine: () => validatePurchaseLine,
     validateSaleLine: () => validateSaleLine,
     yuanToFen: () => yuanToFen,
@@ -246,6 +249,80 @@ var Core = (() => {
     return String(Number((fen / 100).toFixed(2)));
   }
 
+  // src/core/bin.js
+  function toHalfWidth(s) {
+    return String(s).replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 65248)).replace(/[Ａ-Ｚａ-ｚ]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 65248)).replace(/[－—–ー]/g, "-");
+  }
+  var BIN_PATTERN = /^([A-Z]+)-?(\d+)$/;
+  function normalizeBinCode(raw) {
+    if (raw === void 0 || raw === null) {
+      throw new Error("儲格沒有填，請選一格（例如 A-01）");
+    }
+    const cleaned = toHalfWidth(raw).trim().toUpperCase();
+    const m = BIN_PATTERN.exec(cleaned);
+    if (m === null) {
+      throw new Error(`看不懂的儲格代號「${raw}」，要像 A-01 這樣`);
+    }
+    const [, letters, digits] = m;
+    return `${letters}-${digits.padStart(2, "0")}`;
+  }
+  function sortBinCodes(codes) {
+    return codes.slice().sort((a, b) => {
+      const [la, da] = a.split("-");
+      const [lb, db] = b.split("-");
+      if (la !== lb) return la < lb ? -1 : 1;
+      return Number(da) - Number(db);
+    });
+  }
+  function stockByBin(products, moves) {
+    var _a;
+    const byProduct = new Map(products.map((p) => [p.code, p]));
+    const totals = /* @__PURE__ */ new Map();
+    for (const m of moves) {
+      const binCode = normalizeBinCode(m.binCode);
+      const key = `${m.productCode}\0${binCode}`;
+      const delta = Number(m.deltaBase);
+      if (!Number.isFinite(delta)) {
+        throw new Error(`庫存異動的數量有問題（讀到的是「${m.deltaBase}」）`);
+      }
+      totals.set(key, ((_a = totals.get(key)) != null ? _a : 0) + delta);
+    }
+    const rows = [];
+    for (const [key, qtyBase] of totals) {
+      if (qtyBase === 0) continue;
+      const [code, binCode] = key.split("\0");
+      const product = byProduct.get(code);
+      if (product === void 0) continue;
+      rows.push({
+        code,
+        name: product.name,
+        binCode,
+        qtyBase,
+        qtyText: describeQty(qtyBase, product.stockUnitScale, product.baseUnit)
+      });
+    }
+    const order = sortBinCodes([...new Set(rows.map((r) => r.binCode))]);
+    const rank = new Map(order.map((b, i) => [b, i]));
+    return rows.sort((a, b) => {
+      const d = rank.get(a.binCode) - rank.get(b.binCode);
+      return d !== 0 ? d : a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+    });
+  }
+  function moveLegs(productCode, fromBin, toBin, baseQty) {
+    const from = normalizeBinCode(fromBin);
+    const to = normalizeBinCode(toBin);
+    if (from === to) {
+      throw new Error(`來源和目的是同一格（${from}），不需要搬`);
+    }
+    if (!Number.isFinite(baseQty) || baseQty <= 0) {
+      throw new Error("要搬的數量必須大於零");
+    }
+    return [
+      { productCode, binCode: from, deltaBase: -baseQty, costMode: "BIN" },
+      { productCode, binCode: to, deltaBase: baseQty, costMode: "BIN" }
+    ];
+  }
+
   // src/core/validateDoc.js
   var MAX_INPUT_QTY = 1e5;
   var MAX_AMOUNT_FEN = 1e8;
@@ -322,79 +399,44 @@ var Core = (() => {
     }
     return null;
   }
-
-  // src/core/bin.js
-  function toHalfWidth(s) {
-    return String(s).replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 65248)).replace(/[Ａ-Ｚａ-ｚ]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 65248)).replace(/[－—–ー]/g, "-");
-  }
-  var BIN_PATTERN = /^([A-Z]+)-?(\d+)$/;
-  function normalizeBinCode(raw) {
-    if (raw === void 0 || raw === null) {
-      throw new Error("儲格沒有填，請選一格（例如 A-01）");
+  function checkCountOrMoveQty(line, product, allowZero) {
+    if (product === void 0 || product === null) return "找不到這個商品，請重新選一次";
+    const loose = isLooseTeaScale(product.stockUnitScale);
+    const unitOk = loose ? PURCHASE_UNITS.includes(line.inputUnit) : line.inputUnit === product.baseUnit;
+    if (!unitOk) return "這個商品不能用這個單位，請重新選";
+    const q = line.inputQty;
+    if (typeof q !== "number" || !Number.isFinite(q) || q < 0 || !allowZero && q === 0) {
+      return allowZero ? "數量要填 0 或正數" : "數量要大於零";
     }
-    const cleaned = toHalfWidth(raw).trim().toUpperCase();
-    const m = BIN_PATTERN.exec(cleaned);
-    if (m === null) {
-      throw new Error(`看不懂的儲格代號「${raw}」，要像 A-01 這樣`);
-    }
-    const [, letters, digits] = m;
-    return `${letters}-${digits.padStart(2, "0")}`;
-  }
-  function sortBinCodes(codes) {
-    return codes.slice().sort((a, b) => {
-      const [la, da] = a.split("-");
-      const [lb, db] = b.split("-");
-      if (la !== lb) return la < lb ? -1 : 1;
-      return Number(da) - Number(db);
-    });
-  }
-  function stockByBin(products, moves) {
-    var _a;
-    const byProduct = new Map(products.map((p) => [p.code, p]));
-    const totals = /* @__PURE__ */ new Map();
-    for (const m of moves) {
-      const binCode = normalizeBinCode(m.binCode);
-      const key = `${m.productCode}\0${binCode}`;
-      const delta = Number(m.deltaBase);
-      if (!Number.isFinite(delta)) {
-        throw new Error(`庫存異動的數量有問題（讀到的是「${m.deltaBase}」）`);
+    if (q > MAX_INPUT_QTY) return "這個數字看起來不對，請確認";
+    if (!loose && !Number.isInteger(q)) return "這個商品只能一個一個算，不能填小數";
+    if (loose && q > 0) {
+      let base;
+      try {
+        base = toBaseQty(q, line.inputUnit);
+      } catch (err) {
+        return "這個數量換算不出來，請換個數字";
       }
-      totals.set(key, ((_a = totals.get(key)) != null ? _a : 0) + delta);
+      if (base < 1) return "這個數量太小，換算不出來，請換個數字";
     }
-    const rows = [];
-    for (const [key, qtyBase] of totals) {
-      if (qtyBase === 0) continue;
-      const [code, binCode] = key.split("\0");
-      const product = byProduct.get(code);
-      if (product === void 0) continue;
-      rows.push({
-        code,
-        name: product.name,
-        binCode,
-        qtyBase,
-        qtyText: describeQty(qtyBase, product.stockUnitScale, product.baseUnit)
-      });
-    }
-    const order = sortBinCodes([...new Set(rows.map((r) => r.binCode))]);
-    const rank = new Map(order.map((b, i) => [b, i]));
-    return rows.sort((a, b) => {
-      const d = rank.get(a.binCode) - rank.get(b.binCode);
-      return d !== 0 ? d : a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
-    });
+    return null;
   }
-  function moveLegs(productCode, fromBin, toBin, baseQty) {
-    const from = normalizeBinCode(fromBin);
-    const to = normalizeBinCode(toBin);
-    if (from === to) {
-      throw new Error(`來源和目的是同一格（${from}），不需要搬`);
+  function validateCountLine(line, product) {
+    return checkCountOrMoveQty(line, product, true);
+  }
+  function validateMoveLine(line, product) {
+    const qtyProblem = checkCountOrMoveQty(line, product, false);
+    if (qtyProblem !== null) return qtyProblem;
+    let from;
+    let to;
+    try {
+      from = normalizeBinCode(line.binCode);
+      to = normalizeBinCode(line.toBinCode);
+    } catch (err) {
+      return "格子要寫成英文字母加數字，例如 A-01";
     }
-    if (!Number.isFinite(baseQty) || baseQty <= 0) {
-      throw new Error("要搬的數量必須大於零");
-    }
-    return [
-      { productCode, binCode: from, deltaBase: -baseQty, costMode: "BIN" },
-      { productCode, binCode: to, deltaBase: baseQty, costMode: "BIN" }
-    ];
+    if (from === to) return "從哪一格和搬到哪一格是同一格，不用搬";
+    return null;
   }
 
   // src/core/stock.js
@@ -437,6 +479,34 @@ var Core = (() => {
   function onBookQtyInBin(moves, productCode, binCode) {
     const want = normalizeBinCode(binCode);
     return moves.filter((m) => m.productCode === productCode && normalizeBinCode(m.binCode) === want).reduce((sum, m) => sum + toNumber(m.deltaBase, "庫存異動"), 0);
+  }
+  var STAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+  function stampMs(v) {
+    if (typeof v !== "string" || !STAMP.test(v)) return null;
+    const ms = Date.parse(v);
+    return Number.isFinite(ms) ? ms : null;
+  }
+  function bookAsOfCount({ moves, heads, productCode, binCode, countDocNo, countCreatedAt }) {
+    const countMs = stampMs(countCreatedAt);
+    if (countMs === null) return { unknown: true };
+    const want = normalizeBinCode(binCode);
+    const createdOf = /* @__PURE__ */ new Map();
+    for (const h of heads) {
+      if (!createdOf.has(h.docNo)) createdOf.set(h.docNo, []);
+      createdOf.get(h.docNo).push(h.createdAt);
+    }
+    let book = 0;
+    for (const m of moves) {
+      if (m.productCode !== productCode || m.docNo === countDocNo) continue;
+      if (normalizeBinCode(m.binCode) !== want) continue;
+      const found = createdOf.get(m.docNo) || [];
+      if (found.length !== 1) return { unknown: true };
+      const at = stampMs(found[0]);
+      if (at === null) return { unknown: true };
+      if (at > countMs) continue;
+      book += toNumber(m.deltaBase, "庫存異動");
+    }
+    return { book };
   }
 
   // src/core/docNo.js
@@ -633,12 +703,12 @@ var Core = (() => {
   }
 
   // src/core/report.js
-  var STAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+  var STAMP2 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
   function isMoney(v) {
     return typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
   }
-  function stampMs(v) {
-    if (typeof v !== "string" || !STAMP.test(v)) return null;
+  function stampMs2(v) {
+    if (typeof v !== "string" || !STAMP2.test(v)) return null;
     const ms = Date.parse(v);
     return Number.isFinite(ms) ? ms : null;
   }
@@ -690,7 +760,7 @@ var Core = (() => {
     const seen = /* @__PURE__ */ new Set();
     for (const d of docs) {
       if (d.docType !== "SALE" || d.status !== "POSTED") continue;
-      const at = stampMs(d.reviewedAt);
+      const at = stampMs2(d.reviewedAt);
       if (at === null) {
         undatedDocs++;
         continue;
@@ -1065,6 +1135,8 @@ var Core = (() => {
 
         parts.push(button('銷貨', function () { openSale() }, 'wide'))
         parts.push(button('進貨', function () { openPurchase() }, 'wide'))
+        parts.push(button('盤點', function () { openCount() }, 'wide'))
+        parts.push(button('搬動', function () { openMove() }, 'wide'))
         parts.push(button('庫存', function () { openStock() }, 'wide'))
         parts.push(button(owner ? '待複核' : '我送出的單', function () { openList() }, 'wide'))
         // 成本與利潤只有老闆看得到（後端對店長回 P1）。店長的首頁根本沒有這顆鍵
@@ -1459,8 +1531,12 @@ var Core = (() => {
        *
        * 銷貨單：贈品標出來；老闆的明細多三樣後端算好的價格參考（店長的回應裡根本
        * 沒有這些欄）—— 單價、用目前的建議售價算起來多少、低於建議價就醒目標出（F-5）。
+       * 盤點單、搬動單沒有金額，另外畫（countItem、moveItem）。
        */
-      function lineItem(l, sale) {
+      function lineItem(l, docType) {
+        if (docType === 'ADJUST') return countItem(l)
+        if (docType === 'MOVE') return moveItem(l)
+        var sale = docType === 'SALE'
         var rows = [
           el('div', { cls: 'item-name', text: l.seq + '. ' + l.productName }),
           el('div', { text: (sale ? '從 ' : '放在 ') + l.binCode + (sale ? ' 拿' : '') }),
@@ -1478,10 +1554,76 @@ var Core = (() => {
         return el('div', { cls: l.belowSuggested === true ? 'item below' : 'item' }, rows)
       }
 
+      /**
+       * 盤點的一行。店長只會拿到「盤到多少」；「盤點時帳上、差多少」與下面幾個提醒**只在
+       * 老闆的回應裡**（後端不給店長，畫面只是照著有沒有那幾欄畫）。
+       */
+      function countItem(l) {
+        var rows = [
+          el('div', { cls: 'item-name', text: l.seq + '. ' + l.productName }),
+          el('div', { text: '格子 ' + l.binCode }),
+          el('div', { cls: 'num', text: '盤到 ' + l.qtyText }),
+        ]
+        var warn = false
+        if (typeof l.bookText === 'string') {
+          rows.push(el('div', { cls: 'num', text: '盤點時帳上 ' + l.bookText + '、差 ' + l.diffText }))
+        }
+        if (l.unknownOrder === true) {
+          warn = true
+          rows.push(el('div', { cls: 'bad', text: '這一格有一筆看不出是哪一張單的庫存異動，算不出盤點時的帳上。請找開發人員。' }))
+        }
+        if (Array.isArray(l.earlierPending) && l.earlierPending.length > 0) {
+          warn = true
+          rows.push(el('div', { cls: 'bad', text: '這一格有比這張盤點早的單還沒處理：' + l.earlierPending.map(function (p) {
+            return p.docNo + '（' + textOf(TYPE_TEXT, p.docType) + '）'
+          }).join('、') + '。請先處理那些單，再通過這張盤點。' }))
+        }
+        if (typeof l.gainCostText === 'string') {
+          if (l.zeroCostGain === true) {
+            warn = true
+            rows.push(el('div', { cls: 'bad', text: '這筆盤盈會以 0 元入帳，會拉低之後的均價；如果是新進的貨，請改用進貨單登記。' }))
+          } else {
+            rows.push(el('div', { cls: 'muted', text: '這筆盤盈會以每' + l.quoteUnit + ' ' + l.gainCostText + ' 元入帳。' }))
+          }
+        }
+        if (l.checkBin === true) {
+          warn = true
+          rows.push(el('div', { cls: 'bad', text: '請確認格子沒打錯。' }))
+        }
+        return el('div', { cls: warn ? 'item below' : 'item' }, rows)
+      }
+
+      /** 搬動的一行：從哪一格搬到哪一格、多少。 */
+      function moveItem(l) {
+        return el('div', { cls: 'item' }, [
+          el('div', { cls: 'item-name', text: l.seq + '. ' + l.productName }),
+          el('div', { text: '從 ' + l.binCode + ' 搬到 ' + l.toBinCode }),
+          el('div', { cls: 'num', text: l.qtyText }),
+        ])
+      }
+
+      /** 有金額的單（進貨、銷貨）才有合計；盤點、搬動沒有。 */
+      function hasMoney(docType) {
+        return docType === 'PURCHASE' || docType === 'SALE'
+      }
+
+      /** 這種單的一行叫什麼（畫面上的說法）。 */
+      function lineWord(docType) {
+        return docType === 'PURCHASE' ? '行' : '項'
+      }
+
+      var AFTER_SUBMIT = {
+        PURCHASE: '庫存要等老闆按「通過」之後才會加上去。',
+        SALE: '庫存要等老闆按「通過」之後才會扣掉；在那之前，這些量已經不能再賣給別人。',
+        ADJUST: '庫存要等老闆按「通過」之後，才會照你盤到的數字調整。',
+        MOVE: '庫存要等老闆按「通過」之後才會搬過去；在那之前，這些量已經不能再從原來那一格賣出或搬走。請老闆盡快通過。',
+      }
+      var AGAIN = { PURCHASE: '再開一張進貨單', SALE: '再開一張銷貨單', ADJUST: '再開一張盤點單', MOVE: '再開一張搬動單' }
+
       /** 送出成功。**列的是後端實際存下的明細**，不是表單上的內容（F7）。 */
       function showSubmitted(r) {
         form = null
-        var sale = r.docType === 'SALE'
+        var type = r.docType
         var parts = [
           el('div', { cls: 'box' }, [
             el('p', { cls: 'good', text: '送出了。' }),
@@ -1492,16 +1634,15 @@ var Core = (() => {
         if (r.duplicate) {
           parts.push(el('p', { cls: 'muted', text: '這張單剛才已經送出過了，下面是當時存下的內容。' }))
         }
-        parts.push(el('p', { text: sale
-          ? '庫存要等老闆按「通過」之後才會扣掉；在那之前，這些量已經不能再賣給別人。'
-          : '庫存要等老闆按「通過」之後才會加上去。' }))
+        parts.push(el('p', { text: textOf(AFTER_SUBMIT, type) }))
         parts.push(el('h2', { text: '存下的內容' }))
-        r.lines.forEach(function (l) { parts.push(lineItem(l, sale)) })
-        parts.push(el('p', { cls: 'num', text: '合計 ' + r.totalText + ' 元' }))
+        r.lines.forEach(function (l) { parts.push(lineItem(l, type)) })
+        if (hasMoney(type)) parts.push(el('p', { cls: 'num', text: '合計 ' + r.totalText + ' 元' }))
         parts.push(homeButton())
-        parts.push(sale
-          ? button('再開一張銷貨單', function () { openSale() })
-          : button('再開一張進貨單', function () { openPurchase() }))
+        var opener = { PURCHASE: openPurchase, SALE: openSale, ADJUST: openCount, MOVE: openMove }
+        if (Object.prototype.hasOwnProperty.call(opener, type)) {
+          parts.push(button(AGAIN[type], function () { opener[type]() }))
+        }
         render(parts)
       }
 
@@ -1855,6 +1996,452 @@ var Core = (() => {
         })
       }
 
+      // ---- 盤點與搬動（切片 P6）共用 ----
+      //
+      // 跟銷貨一樣：全部是按鍵（商品、格子、單位），表單內容放在 form 物件裡，送出失敗、
+      // 拿不到鎖、量不夠時內容都還在；改了任何一格就換一個 requestId。
+      // 格子另外有一個輸入框：新的格子（帳上從沒出現過的）要能打進去。
+
+      /** 打開表單前先重新要一次庫存（格子與「還能搬多少」要是現在的）。 */
+      function openWithStock(step, onReady) {
+        var t = begin()
+        showLoading()
+        var again = function () { return button('再試一次', function () { openWithStock(step, onReady) }) }
+        call('stock').then(function (r) {
+          if (!current(t)) return
+          log({ step: step, ok: r.ok, code: r.code })
+          if (!r.ok) {
+            if (handledAuth(r)) return
+            return showError(messageFor(r.code), [again(), homeButton()])
+          }
+          clearTimeout(watchdog)
+          session.stock = r
+          if (r.items.length === 0) {
+            return showError('還沒有任何商品。請先在試算表的「商品」分頁加一列，再回來重新整理。', [homeButton(), reloadButton()])
+          }
+          onReady()
+        }).catch(netFailed(t, '連不到店裡的系統。請確認網路之後再試一次。', [again(), homeButton()]))
+      }
+
+      /** 這個商品帳上有的格子（只有格子代號，**不帶數量**）。 */
+      function binsOf(code) {
+        var bins = session.stock && session.stock.byBin ? session.stock.byBin : []
+        var out = []
+        bins.forEach(function (b) { if (b.code === code && out.indexOf(b.binCode) === -1) out.push(b.binCode) })
+        return out
+      }
+
+      /** 打的格子 → 正規化之後的樣子（跟後端同一份 Core）；空白或看不懂回 null。 */
+      function binKey(raw) {
+        var s = halfWidth(raw)
+        if (s === '') return null
+        try {
+          return Core.normalizeBinCode(s)
+        } catch (e) {
+          return null
+        }
+      }
+
+      /**
+       * 選格子：帳上有的格子是按鍵（按鍵上只有格子代號），下面一個輸入框打別的格子。
+       * 按了按鍵就清掉輸入框；打字就取消按鍵的選取。值放在 ln[field]。
+       */
+      function binPicker(ln, field, codes, locked, onPick) {
+        var wrap = el('div')
+        var typed = el('input')
+        var row = el('div', { cls: 'units' })
+        var buttons = codes.map(function (c) {
+          var b = button(c, function () {
+            ln[field] = c
+            typed.value = ''
+            buttons.forEach(function (x) { x.setAttribute('aria-pressed', String(x === b)) })
+            edited()
+            if (onPick) onPick()
+          })
+          b.setAttribute('aria-pressed', String(c === ln[field]))
+          b.disabled = locked
+          row.appendChild(b)
+          return b
+        })
+        if (codes.length > 0) wrap.appendChild(row)
+        wrap.appendChild(el('p', { cls: 'muted', text: codes.length > 0 ? '上面沒有的格子，打在這裡：' : '打格子，例如 A-01：' }))
+        typed.type = 'text'
+        typed.placeholder = '例如 A-01'
+        typed.autocapitalize = 'characters'
+        typed.value = codes.indexOf(ln[field]) === -1 ? ln[field] : ''
+        typed.disabled = locked
+        typed.addEventListener('input', function () {
+          ln[field] = typed.value
+          buttons.forEach(function (x) { x.setAttribute('aria-pressed', 'false') })
+          edited()
+        })
+        wrap.appendChild(typed)
+        return wrap
+      }
+
+      /** 商品按鍵一排。選了別的商品 → onChange（重畫：格子與單位跟著商品變）。 */
+      function productPicker(ln, locked, onChange) {
+        var row = el('div', { cls: 'units' })
+        session.stock.items.forEach(function (it) {
+          var b = button(it.name, function () {
+            if (ln.code === it.code) return
+            ln.code = it.code
+            var units = it.purchaseUnits || []
+            ln.unit = units.indexOf('台斤') !== -1 ? '台斤' : (units[0] || '')
+            onChange(it)
+            edited()
+          })
+          b.setAttribute('aria-pressed', String(it.code === ln.code))
+          b.disabled = locked
+          row.appendChild(b)
+        })
+        return row
+      }
+
+      /** 單位按鍵一排（盤點、搬動用進貨那一組：散茶六種含公斤，計件只有它自己的）。 */
+      function unitButtonsFor(ln, product, locked) {
+        var row = el('div', { cls: 'units' })
+        var unitButtons = (product.purchaseUnits || []).map(function (u) {
+          var b = button(u, function () {
+            ln.unit = u
+            unitButtons.forEach(function (x) { x.setAttribute('aria-pressed', String(x === b)) })
+            edited()
+          })
+          b.setAttribute('aria-pressed', String(u === ln.unit))
+          b.disabled = locked
+          row.appendChild(b)
+          return b
+        })
+        return row
+      }
+
+      function qtyInput(ln, locked) {
+        var qty = el('input', { cls: 'num-input' })
+        qty.type = 'text'
+        qty.inputMode = 'decimal'
+        qty.value = ln.qty
+        qty.disabled = locked
+        qty.addEventListener('input', function () { ln.qty = qty.value; edited() })
+        return qty
+      }
+
+      /** 一項的外框；被後端擋下的那一項整個框起來（同銷貨）。 */
+      function lineFrame(i) {
+        var flagged = form.badLine === i + 1
+        var box = el('div', { cls: flagged ? 'box alert' : 'box' }, [el('p', { cls: 'item-name', text: '第 ' + (i + 1) + ' 項' })])
+        if (flagged && form.message) box.appendChild(el('p', { cls: 'bad', text: form.message }))
+        return box
+      }
+
+      function deleteButton(i, rerender) {
+        var del = button('刪掉這一項', function () {
+          if (form.sending) return
+          form.lines.splice(i, 1)
+          form.badLine = 0
+          edited()
+          rerender(true)
+        })
+        del.disabled = form.sending
+        return del
+      }
+
+      /** 表單的外殼：標題、說明、錯誤、每一項、加一項、送出、回首頁。 */
+      function renderLines(title, notes, lineBox, blank, send, keepScroll) {
+        var parts = [el('h2', { text: title })]
+        notes.forEach(function (n) { parts.push(el('p', { cls: 'muted', text: n })) })
+        if (form.message) parts.push(el('div', { cls: 'box' }, [el('p', { cls: 'bad', text: form.message })]))
+        form.lines.forEach(function (ln, i) { parts.push(lineBox(ln, i)) })
+        if (form.lines.length < MAX_LINES) {
+          var more = button('再加一項', function () {
+            if (form.sending) return
+            form.lines.push(blank())
+            edited()
+            send.rerender(true)
+          })
+          more.disabled = form.sending
+          parts.push(more)
+        }
+        var go = button(form.sending ? '送出中…' : '送出', send.submit, 'primary')
+        go.disabled = form.sending
+        parts.push(go)
+        parts.push(homeButton('回首頁（不送出）'))
+        render(parts, keepScroll)
+      }
+
+      /**
+       * 盤點與搬動共用的送出（同 submitSale：同步旗標擋連點、看門狗、錯誤後保留內容、
+       * 回應沒收到時再按一次會被後端認成同一張單）。
+       */
+      function sendLines(kind, action, check, rerender, d6Text) {
+        if (form === null || form.kind !== kind || form.sending) return
+        var checked = check()
+        if (checked.message) {
+          form.message = checked.message
+          form.badLine = checked.line || 0
+          return rerender()
+        }
+        var mine = form
+        var ticket = begin()
+        mine.sending = true
+        mine.message = ''
+        mine.badLine = 0
+        var attempt = ++mine.attempt
+        rerender(true)
+
+        function stillMine() { return current(ticket) && form === mine && mine.attempt === attempt }
+        function backToForm(message, line) {
+          mine.attempt++
+          mine.sending = false
+          mine.message = message
+          mine.badLine = line || 0
+          begin()
+          rerender()
+        }
+
+        armWatchdog(function () {
+          if (!stillMine()) return
+          backToForm('等太久了，不確定有沒有送出。請直接再按一次「送出」——系統認得同一張單，不會重複。')
+        })
+
+        log({ step: action, lines: checked.lines.length })
+        call(action, { requestId: mine.requestId, lines: checked.lines }).then(function (r) {
+          if (!stillMine()) return
+          clearTimeout(watchdog)
+          log({ step: action + '-done', ok: r.ok, code: r.code })
+          if (r.ok) return showSubmitted(r)
+          if (handledAuth(r)) return
+          if (r.code === 'D6' && d6Text) return backToForm(d6Text(r, mine), r.line)
+          backToForm(messageOf(r), r.code === 'B5' ? r.line : 0)
+        }, function (err) {
+          if (!stillMine()) return
+          clearTimeout(watchdog)
+          log({ step: 'error', code: err && err.code, message: err && err.message })
+          if (err && err.code === 'NO_TOKEN') return reloadOnce()
+          backToForm('送出的時候連線斷了，不確定有沒有送出。請確認網路之後，直接再按一次「送出」——系統認得同一張單，不會重複。')
+        })
+      }
+
+      // ---- 盤點 ----
+      //
+      // **填的時候不顯示任何帳上數量**（規格 §4.4：先看到答案就不會認真數）。格子按鍵上
+      // 只有格子代號。這是提醒，不是保密：店長在「庫存」本來就看得到（計畫 P3-1）。
+
+      function blankCountLine() {
+        return { code: '', bin: '', qty: '', unit: '' }
+      }
+
+      function openCount() {
+        openWithStock('count-stock', function () {
+          form = { kind: 'ADJUST', requestId: newRequestId(), lines: [blankCountLine()], sending: false, message: '', badLine: 0, attempt: 0 }
+          renderCountForm()
+        })
+      }
+
+      function countLineBox(ln, i) {
+        var product = productOf(ln.code)
+        var locked = form.sending
+        var box = lineFrame(i)
+
+        box.appendChild(el('label', { text: '商品' }))
+        box.appendChild(productPicker(ln, locked, function () { ln.bin = ''; renderCountForm(true) }))
+
+        box.appendChild(el('label', { text: '哪一格' }))
+        if (!product) {
+          box.appendChild(el('p', { cls: 'muted', text: '先選商品，這裡才會出現格子' }))
+        } else {
+          box.appendChild(binPicker(ln, 'bin', binsOf(product.code), locked))
+        }
+
+        box.appendChild(el('label', { text: '這一格實際有多少' }))
+        box.appendChild(qtyInput(ln, locked))
+        var none = button('這一格沒有了', function () {
+          if (form.sending) return
+          ln.qty = '0'
+          edited()
+          renderCountForm(true)
+        })
+        none.disabled = locked
+        box.appendChild(el('div', { cls: 'units' }, [none]))
+
+        box.appendChild(el('label', { text: '單位' }))
+        if (!product) {
+          box.appendChild(el('p', { cls: 'muted', text: '先選商品，這裡才會出現可以用的單位' }))
+        } else {
+          box.appendChild(unitButtonsFor(ln, product, locked))
+        }
+
+        if (form.lines.length > 1) box.appendChild(deleteButton(i, renderCountForm))
+        return box
+      }
+
+      function renderCountForm(keepScroll) {
+        renderLines('盤點', [
+          '一格一格盤：填「這一格現在實際有多少」。一張最多 ' + MAX_LINES + ' 項。',
+          '從開始點貨到按「送出」，這一格不要出貨、也不要送別的單。',
+          '送出之後要等老闆按「通過」，庫存才會照你盤到的數字調整。新進的貨請用進貨單。',
+        ], countLineBox, blankCountLine, { submit: submitCountForm, rerender: renderCountForm }, keepScroll)
+      }
+
+      /** 送出前在手機上先擋明顯的錯（真正的規則在後端）。0 是合法的。 */
+      function checkCountForm() {
+        var out = []
+        var seen = {}
+        for (var i = 0; i < form.lines.length; i++) {
+          var ln = form.lines[i]
+          var at = i + 1
+          var n = '第 ' + at + ' 項：'
+          var product = productOf(ln.code)
+          if (!product) return { message: n + '請選商品。', line: at }
+          var bin = binKey(ln.bin)
+          if (bin === null) return { message: n + '請選哪一格，或打一個格子，例如 A-01。', line: at }
+          var q = halfWidth(ln.qty)
+          if (!DECIMAL_2.test(q)) return { message: n + '請填這一格實際有多少（數字，最多到小數兩位）；沒有了就按「這一格沒有了」。', line: at }
+          if (!Core.isLooseTeaScale(product.stockUnitScale) && !Number.isInteger(Number(q))) {
+            return { message: n + '這個商品只能一個一個算，數量不能有小數。', line: at }
+          }
+          if ((product.purchaseUnits || []).indexOf(ln.unit) === -1) return { message: n + '請選單位。', line: at }
+          var key = ln.code + '|' + bin
+          if (Object.prototype.hasOwnProperty.call(seen, key)) {
+            return { message: n + '同一個商品、同一格已經在第 ' + seen[key] + ' 項了，請合併成一項。', line: at }
+          }
+          seen[key] = at
+          out.push({ productCode: ln.code, binCode: halfWidth(ln.bin), inputQty: Number(q), inputUnit: ln.unit })
+        }
+        return { lines: out }
+      }
+
+      function submitCountForm() {
+        sendLines('ADJUST', 'submitAdjust', checkCountForm, renderCountForm, null)
+      }
+
+      // ---- 搬動 ----
+      //
+      // **先搬好再送單**（跟銷貨「貨給客人了才送單」一樣）。「從哪一格」只列這一格現在還能搬
+      // 的量 > 0 的（帳上 − 待複核的銷貨與搬出，後端算的），按鍵上寫還能搬多少。
+
+      function blankMoveLine() {
+        return { code: '', bin: '', to: '', qty: '', unit: '' }
+      }
+
+      /** 這個商品現在還能搬的格子（> 0 的）。 */
+      function movableBins(code) {
+        var bins = session.stock && session.stock.byBin ? session.stock.byBin : []
+        return bins.filter(function (b) { return b.code === code && b.availableBase > 0 })
+      }
+
+      function openMove() {
+        openWithStock('move-stock', function () {
+          form = { kind: 'MOVE', requestId: newRequestId(), lines: [blankMoveLine()], sending: false, message: '', badLine: 0, attempt: 0 }
+          renderMoveForm()
+        })
+      }
+
+      function moveLineBox(ln, i) {
+        var product = productOf(ln.code)
+        var locked = form.sending
+        var box = lineFrame(i)
+
+        box.appendChild(el('label', { text: '商品' }))
+        box.appendChild(productPicker(ln, locked, function () {
+          var from = movableBins(ln.code)
+          ln.bin = from.length === 1 ? from[0].binCode : ''
+          ln.to = ''
+          renderMoveForm(true)
+        }))
+
+        box.appendChild(el('label', { text: '從哪一格搬' }))
+        if (!product) {
+          box.appendChild(el('p', { cls: 'muted', text: '先選商品，這裡才會出現可以搬的格子' }))
+        } else {
+          var from = movableBins(product.code)
+          if (from.length === 0) {
+            box.appendChild(el('p', { cls: 'bad', text: '這個商品現在沒有可以搬的。' }))
+          } else {
+            var fromRow = el('div', { cls: 'units' })
+            from.forEach(function (bn) {
+              var b = button(bn.binCode + '（還能搬 ' + bn.availableText + '）', function () {
+                if (ln.bin === bn.binCode) return
+                ln.bin = bn.binCode
+                if (binKey(ln.to) === ln.bin) ln.to = ''
+                edited()
+                renderMoveForm(true)   // 「搬到哪一格」不列來源格
+              })
+              b.setAttribute('aria-pressed', String(bn.binCode === ln.bin))
+              b.disabled = locked
+              fromRow.appendChild(b)
+            })
+            box.appendChild(fromRow)
+          }
+        }
+
+        box.appendChild(el('label', { text: '搬到哪一格' }))
+        if (!product) {
+          box.appendChild(el('p', { cls: 'muted', text: '先選商品，這裡才會出現格子' }))
+        } else {
+          var targets = binsOf(product.code).filter(function (c) { return c !== ln.bin })
+          box.appendChild(binPicker(ln, 'to', targets, locked))
+        }
+
+        box.appendChild(el('label', { text: '搬多少' }))
+        box.appendChild(qtyInput(ln, locked))
+
+        box.appendChild(el('label', { text: '單位' }))
+        if (!product) {
+          box.appendChild(el('p', { cls: 'muted', text: '先選商品，這裡才會出現可以用的單位' }))
+        } else {
+          box.appendChild(unitButtonsFor(ln, product, locked))
+        }
+
+        if (form.lines.length > 1) box.appendChild(deleteButton(i, renderMoveForm))
+        return box
+      }
+
+      function renderMoveForm(keepScroll) {
+        renderLines('搬動', [
+          '先把貨搬好，再送搬動單。一張最多 ' + MAX_LINES + ' 項。',
+          '送出之後要等老闆按「通過」，庫存才會搬過去；在那之前，這些量不能再從原來那一格賣出或搬走。',
+        ], moveLineBox, blankMoveLine, { submit: submitMoveForm, rerender: renderMoveForm }, keepScroll)
+      }
+
+      function checkMoveForm() {
+        var out = []
+        for (var i = 0; i < form.lines.length; i++) {
+          var ln = form.lines[i]
+          var at = i + 1
+          var n = '第 ' + at + ' 項：'
+          var product = productOf(ln.code)
+          if (!product) return { message: n + '請選商品。', line: at }
+          var from = movableBins(ln.code)
+          if (from.length === 0) return { message: n + '這個商品現在沒有可以搬的，請換一個商品，或刪掉這一項。', line: at }
+          if (!from.some(function (b) { return b.binCode === ln.bin })) return { message: n + '請選從哪一格搬。', line: at }
+          var to = binKey(ln.to)
+          if (to === null) return { message: n + '請選搬到哪一格，或打一個格子，例如 B-01。', line: at }
+          if (to === ln.bin) return { message: n + '從哪一格和搬到哪一格是同一格，不用搬。', line: at }
+          var q = halfWidth(ln.qty)
+          if (!DECIMAL_2.test(q) || !(Number(q) > 0)) return { message: n + '數量要填大於零的數字，最多到小數兩位。', line: at }
+          if (!Core.isLooseTeaScale(product.stockUnitScale) && !Number.isInteger(Number(q))) {
+            return { message: n + '這個商品只能一個一個算，數量不能有小數。', line: at }
+          }
+          if ((product.purchaseUnits || []).indexOf(ln.unit) === -1) return { message: n + '請選單位。', line: at }
+          out.push({ productCode: ln.code, binCode: ln.bin, toBinCode: halfWidth(ln.to), inputQty: Number(q), inputUnit: ln.unit })
+        }
+        return { lines: out }
+      }
+
+      /** 來源格不夠（D6）。同銷貨：後端的訊息不帶品名，品名與格子從自己的表單帶入。 */
+      function cannotMoveText(r, f) {
+        var n = r.line
+        var ln = typeof n === 'number' && n >= 1 && n <= f.lines.length ? f.lines[n - 1] : null
+        if (!ln || typeof r.availableText !== 'string') return messageOf(r)
+        var product = productOf(ln.code)
+        var how = r.availableText === '現在沒有可以搬的' ? '現在沒有可以搬的。' : '現在最多還能搬 ' + r.availableText + '。'
+        return '第 ' + n + ' 項（' + (product ? product.name : '') + '，從 ' + ln.bin + ' 搬）：這一格' + how + '請改數量，或換一格搬。'
+      }
+
+      function submitMoveForm() {
+        sendLines('MOVE', 'submitMove', checkMoveForm, renderMoveForm, cannotMoveText)
+      }
+
       // ---- 待複核（老闆）／我送出的單（店長） ----
 
       function listButton() {
@@ -1886,7 +2473,7 @@ var Core = (() => {
           b.appendChild(el('div', { cls: 'num', text: d.docNo }))
           b.appendChild(el('div', { text: textOf(TYPE_TEXT, d.docType) + '　' + textOf(STATUS_TEXT, d.status) }))
           b.appendChild(el('div', { text: d.createdByName + '　' + whenText(d.createdAt) }))
-          b.appendChild(el('div', { text: d.lineCount + (d.docType === 'SALE' ? ' 項' : ' 行') + '　合計 ' + d.totalText + ' 元' }))
+          b.appendChild(el('div', { text: d.lineCount + ' ' + lineWord(d.docType) + (hasMoney(d.docType) ? '　合計 ' + d.totalText + ' 元' : '') }))
           parts.push(b)
         })
         parts.push(homeButton())
@@ -1941,13 +2528,16 @@ var Core = (() => {
         if (sale && owner) {
           parts.push(el('p', { cls: 'muted', text: '「建議售價」是商品表上現在的價錢，不是送單那時候的。' }))
         }
-        r.lines.forEach(function (l) { parts.push(lineItem(l, sale)) })
-        parts.push(el('p', { cls: 'num', text: '合計 ' + d.totalText + ' 元' }))
+        if (d.docType === 'ADJUST' && owner && d.status === 'PENDING') {
+          parts.push(el('p', { cls: 'muted', text: '「盤點時帳上」是送出這張盤點那一刻，那一格的帳上；通過時就照這個算差額。' }))
+        }
+        r.lines.forEach(function (l) { parts.push(lineItem(l, d.docType)) })
+        if (hasMoney(d.docType)) parts.push(el('p', { cls: 'num', text: '合計 ' + d.totalText + ' 元' }))
         if (note) parts.push(el('div', { cls: 'box' }, [el('p', { cls: 'bad', text: note })]))
 
         var reviewButtons = []
-        if (owner && d.status === 'PENDING' && (d.docType === 'PURCHASE' || sale)) {
-          var pass = button(sale ? '通過（庫存扣掉）' : '通過（庫存加上去）', function () { review(r, pass, reviewButtons) }, 'primary')
+        if (owner && d.status === 'PENDING' && Object.prototype.hasOwnProperty.call(PASS_TEXT, d.docType)) {
+          var pass = button(PASS_TEXT[d.docType], function () { review(r, pass, reviewButtons) }, 'primary')
           var back = button('退回', function () { rejectDraft = null; showRejectForm(r, '') })
           reviewButtons.push(pass, back)
           parts.push(pass, back)
@@ -1955,6 +2545,21 @@ var Core = (() => {
         parts.push(backFromDoc())
         parts.push(homeButton())
         render(parts)
+      }
+
+      var PASS_TEXT = { PURCHASE: '通過（庫存加上去）', SALE: '通過（庫存扣掉）', ADJUST: '通過（照盤到的數字調整庫存）', MOVE: '通過（搬過去）' }
+
+      /**
+       * 通過要帶的東西。盤點單多帶 bookSeen：這個畫面上每一行的「盤點時帳上」（P2-1）——
+       * 後端鎖內重算的不一樣就回 D3，老闆通過的差額一定是他看到的那個。
+       */
+      function approveParams(r) {
+        var d = r.doc
+        var params = { docNo: d.docNo, updatedAt: d.updatedAt }
+        if (d.docType === 'ADJUST') {
+          params.bookSeen = r.lines.map(function (l) { return typeof l.bookBase === 'number' ? l.bookBase : null })
+        }
+        return params
       }
 
       /** 通過。重按永遠安全（後端在鎖內重讀狀態、核對已寫的異動），但畫面上還是擋連點。 */
@@ -1972,7 +2577,7 @@ var Core = (() => {
           showError('等太久了，不確定有沒有通過。請按「重新打開這張單」看狀態；再按一次「通過」也安全，不會重複入庫。', [reopen(), listButton(), homeButton()])
         })
 
-        call('approve', { docNo: d.docNo, updatedAt: d.updatedAt }).then(function (res) {
+        call('approve', approveParams(r)).then(function (res) {
           if (!current(ticket)) return
           clearTimeout(watchdog)
           if (res.ok) return showReviewed(d.docNo, 'POSTED', d.docType)
@@ -2050,8 +2655,10 @@ var Core = (() => {
         ])
       }
 
+      var POSTED_TEXT = { PURCHASE: '已通過。庫存已經加上去了。', SALE: '已通過。庫存已經扣掉了。', ADJUST: '已通過。庫存已經照盤到的數字調整了。', MOVE: '已通過。庫存已經搬過去了。' }
+
       function showReviewed(docNo, status, docType) {
-        var posted = docType === 'SALE' ? '已通過。庫存已經扣掉了。' : '已通過。庫存已經加上去了。'
+        var posted = textOf(POSTED_TEXT, docType)
         render([
           el('div', { cls: 'box' }, [
             el('p', { cls: 'good', text: status === 'POSTED' ? posted : '已退回。送單的人會在「我送出的單」看到原因。' }),
