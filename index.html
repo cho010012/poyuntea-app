@@ -17,6 +17,8 @@
       --line: #1a1a1a;
       --ok: #0b6b2e;
       --bad: #a4000f;
+      --warn: #8a6d00;
+      --warn-bg: #fff6cc;
     }
     body {
       margin: 0;
@@ -89,6 +91,8 @@
     /* 銷貨：被後端擋下的那一項整個框起來；老闆明細上低於建議價的項目左邊一條紅線 */
     .box.alert { border: 4px solid var(--bad); }
     .item.below { border-left: 6px solid var(--bad); padding-left: 12px; }
+    /* 補完中斷的「通過」（切片 P7）：可以補、已經寫完是黃色框；不能自動補用上面的紅框（.box.alert） */
+    .box.warn { border: 4px solid var(--warn); background: var(--warn-bg); }
   </style>
 </head>
 <body>
@@ -1224,6 +1228,14 @@ var Core = (() => {
           parts.push(el('p', { text: '還沒有任何商品。請在試算表的「商品」分頁加一列。' }))
         }
         r.items.forEach(function (it) {
+          // 這種茶的庫存記錄壞了（切片 P7 C）：後端沒給任何數量，只講「有問題」，其他茶照常
+          if (it.broken === true) {
+            parts.push(el('div', { cls: 'item below' }, [
+              el('div', { cls: 'item-name', text: it.name }),
+              el('div', { cls: 'bad', text: '這種茶的庫存記錄有問題，請找開發人員。' }),
+            ]))
+            return
+          }
           // 計件商品不受單位切換影響（「10 罐」就是 10 罐）
           var loose = Core.isLooseTeaScale(it.stockUnitScale)
           var onBook = it.isEmpty ? '沒有庫存' : (loose ? looseText(it.onBookBase, '數量有問題', it.onBookText) : it.onBookText)
@@ -1242,6 +1254,9 @@ var Core = (() => {
             // 從來沒進過貨就講「還沒進貨」—— 「每台斤 0 元」會被當成真的價錢
             if (it.hasCostHistory === false) {
               lines.push(el('div', { cls: 'muted', text: '還沒進貨' }))
+            } else if (it.costBroken === true) {
+              // 只有成本那幾欄壞了：數量照常，均價不顯示（只有老闆的回應裡有這個旗標）
+              lines.push(el('div', { cls: 'bad', text: '成本算不出來，請找開發人員。' }))
             } else if (!it.isEmpty && it.avgCostText !== undefined) {
               lines.push(el('div', { cls: 'muted', text: '平均成本：每' + it.quoteUnit + ' ' + it.avgCostText + ' 元' }))
             }
@@ -1306,8 +1321,18 @@ var Core = (() => {
         return { code: '', bin: '', qty: '', unit: '', amount: '' }
       }
 
+      /**
+       * 表單可以選的商品：**略過記錄壞掉的**（切片 P7 C）。後端對數量壞掉的商品只回
+       * { code, name, broken: true }，沒有單位、價格、數量 —— 拿去畫表單會出錯，也不該被賣、進、盤、搬。
+       * 查庫存頁以外，每一個用到 session.stock.items 的地方都走這裡。
+       */
+      function usableItems() {
+        var items = session.stock && Array.isArray(session.stock.items) ? session.stock.items : []
+        return items.filter(function (it) { return it.broken !== true })
+      }
+
       function productOf(code) {
-        var items = session.stock ? session.stock.items : []
+        var items = usableItems()
         for (var i = 0; i < items.length; i++) if (items[i].code === code) return items[i]
         return null
       }
@@ -1315,7 +1340,7 @@ var Core = (() => {
       function openPurchase() {
         begin()
         clearTimeout(watchdog)
-        var items = session.stock ? session.stock.items : []
+        var items = usableItems()
         if (items.length === 0) {
           return showError('還沒有任何商品可以進貨。請先在試算表的「商品」分頁加一列，再回來重新整理。', [homeButton(), reloadButton()])
         }
@@ -1335,7 +1360,7 @@ var Core = (() => {
 
         box.appendChild(el('label', { text: '商品' }))
         var pickRow = el('div', { cls: 'units' })
-        session.stock.items.forEach(function (it) {
+        usableItems().forEach(function (it) {
           var b = button(it.name, function () {
             if (ln.code === it.code) return   // 再點一次已經選的，什麼都不變（單位也不要被洗回預設）
             ln.code = it.code
@@ -1715,7 +1740,7 @@ var Core = (() => {
           }
           clearTimeout(watchdog)
           session.stock = r
-          if (r.items.length === 0) {
+          if (usableItems().length === 0) {
             return showError('還沒有任何商品可以賣。請先在試算表的「商品」分頁加一列，再回來重新整理。', [homeButton(), reloadButton()])
           }
           form = { kind: 'SALE', requestId: newRequestId(), lines: [blankSaleLine()], sending: false, message: '', badLine: 0, attempt: 0 }
@@ -1732,7 +1757,7 @@ var Core = (() => {
 
         box.appendChild(el('label', { text: '商品' }))
         var pickRow = el('div', { cls: 'units' })
-        session.stock.items.forEach(function (it) {
+        usableItems().forEach(function (it) {
           var b = button(it.name, function () {
             if (ln.code === it.code) return
             ln.code = it.code
@@ -2016,7 +2041,7 @@ var Core = (() => {
           }
           clearTimeout(watchdog)
           session.stock = r
-          if (r.items.length === 0) {
+          if (usableItems().length === 0) {
             return showError('還沒有任何商品。請先在試算表的「商品」分頁加一列，再回來重新整理。', [homeButton(), reloadButton()])
           }
           onReady()
@@ -2082,7 +2107,7 @@ var Core = (() => {
       /** 商品按鍵一排。選了別的商品 → onChange（重畫：格子與單位跟著商品變）。 */
       function productPicker(ln, locked, onChange) {
         var row = el('div', { cls: 'units' })
-        session.stock.items.forEach(function (it) {
+        usableItems().forEach(function (it) {
           var b = button(it.name, function () {
             if (ln.code === it.code) return
             ln.code = it.code
@@ -2531,20 +2556,118 @@ var Core = (() => {
         if (d.docType === 'ADJUST' && owner && d.status === 'PENDING') {
           parts.push(el('p', { cls: 'muted', text: '「盤點時帳上」是送出這張盤點那一刻，那一格的帳上；通過時就照這個算差額。' }))
         }
+        // 中斷的「通過」（切片 P7）：明細上方一個框。repair 只在老闆的回應裡（店長的回應根本沒有）
+        var repair = owner && d.status === 'PENDING' ? repairOf(r) : null
+        if (repair !== null) parts.push(repairBox(repair))
         r.lines.forEach(function (l) { parts.push(lineItem(l, d.docType)) })
         if (hasMoney(d.docType)) parts.push(el('p', { cls: 'num', text: '合計 ' + d.totalText + ' 元' }))
         if (note) parts.push(el('div', { cls: 'box' }, [el('p', { cls: 'bad', text: note })]))
 
         var reviewButtons = []
-        if (owner && d.status === 'PENDING' && Object.prototype.hasOwnProperty.call(PASS_TEXT, d.docType)) {
-          var pass = button(PASS_TEXT[d.docType], function () { review(r, pass, reviewButtons) }, 'primary')
+        if (repair !== null && repair.state !== 'stuck') {
+          parts.push(button('補完並通過', function () { showRepairConfirm(r, '') }, 'primary'))
+        }
+        // 可以補：通過與退回都只會 D9，不給；不能自動補：請他不要再按，也不給。已經寫完：「通過」也行
+        var canReview = repair === null || repair.state === 'complete'
+        if (canReview && owner && d.status === 'PENDING' && Object.prototype.hasOwnProperty.call(PASS_TEXT, d.docType)) {
+          var pass = button(PASS_TEXT[d.docType], function () { review(r, pass, reviewButtons) }, repair === null ? 'primary' : undefined)
           var back = button('退回', function () { rejectDraft = null; showRejectForm(r, '') })
           reviewButtons.push(pass, back)
-          parts.push(pass, back)
+          parts.push(pass)
+          if (repair === null) parts.push(back)
         }
         parts.push(backFromDoc())
         parts.push(homeButton())
         render(parts)
+      }
+
+      /** 後端的 repair（只認得三種狀態；其他一律當成沒有）。 */
+      function repairOf(r) {
+        var rep = r.repair
+        if (rep === null || typeof rep !== 'object') return null
+        if (rep.state !== 'resumable' && rep.state !== 'complete' && rep.state !== 'stuck') return null
+        return rep
+      }
+
+      /** 預覽的一筆：品名、格子、數量；搬動標出搬出／搬入。全部用 textContent。 */
+      function repairLine(x) {
+        var leg = x.leg === 'OUT' ? '（搬出）' : (x.leg === 'IN' ? '（搬入）' : '')
+        return el('div', { cls: 'item' }, [
+          el('div', { cls: 'item-name', text: String(x.productName) }),
+          el('div', { text: '格子 ' + x.binCode + '　' + x.qtyText + leg }),
+        ])
+      }
+
+      function repairBox(rep) {
+        if (rep.state === 'stuck') {
+          return el('div', { cls: 'box alert' }, [el('p', { cls: 'bad', text: '這張單的庫存記錄對不上，不能自動補。請不要再按，截圖給開發人員。' })])
+        }
+        if (rep.state === 'complete') {
+          return el('div', { cls: 'box warn' }, [el('p', { text: '這張單的庫存記錄已經寫完，只差最後一步。按「補完並通過」（或「通過」）就好。' })])
+        }
+        var done = Array.isArray(rep.done) ? rep.done : []
+        var todo = Array.isArray(rep.todo) ? rep.todo : []
+        var kids = [
+          el('p', { text: '這張單上次按「通過」時中斷了：該寫 ' + rep.total + ' 筆庫存記錄，只寫了 ' + rep.written + ' 筆。按「補完並通過」會把剩下的 ' + todo.length + ' 筆寫完。' }),
+          el('p', { cls: 'item-name', text: '已經寫的' }),
+        ]
+        done.forEach(function (x) { kids.push(repairLine(x)) })
+        kids.push(el('p', { cls: 'item-name', text: '將要補的' }))
+        todo.forEach(function (x) { kids.push(repairLine(x)) })
+        return el('div', { cls: 'box warn' }, kids)
+      }
+
+      /**
+       * 「補完並通過」的確認畫面（同退回：先確認再送）。只**附加**剩下的庫存記錄、把單改成已通過；
+       * 已經寫的不刪不改。L1 留在這個畫面；成功 → 「已通過」，那個畫面有「回待複核清單」。
+       */
+      function showRepairConfirm(r, message) {
+        begin()
+        clearTimeout(watchdog)
+        var d = r.doc
+        var rep = repairOf(r)
+        var left = rep !== null && Array.isArray(rep.todo) ? rep.todo.length : 0
+        var note = el('p', { cls: 'bad', text: message })
+        var busy = false
+        var go = button('確定補完', function () {
+          if (busy) return
+          busy = true   // 同步擋連點
+          go.disabled = true
+          cancel.disabled = true
+          go.textContent = '補完中…'
+          var ticket = begin()
+          var reopen = function () { return button('重新打開這張單', function () { openDoc(d.docNo) }) }
+          armWatchdog(function () {
+            if (!current(ticket)) return
+            begin()
+            showError('等太久了，不確定有沒有補完。請按「重新打開這張單」看狀態；再按一次也安全，不會重複寫。', [reopen(), listButton(), homeButton()])
+          })
+          call('repairDoc', { docNo: d.docNo, updatedAt: d.updatedAt }).then(function (res) {
+            if (!current(ticket)) return
+            clearTimeout(watchdog)
+            if (res.ok) return showReviewed(d.docNo, 'POSTED', d.docType)
+            if (handledAuth(res)) return
+            if (res.code === 'L1') return showRepairConfirm(r, messageOf(res))
+            if (res.code === 'D2') return showError(messageOf(res), [listButton(), homeButton()])
+            showError(messageOf(res), [reopen(), listButton(), homeButton()])
+          }, function (err) {
+            if (!current(ticket)) return
+            clearTimeout(watchdog)
+            if (err && err.code === 'NO_TOKEN') return reloadOnce()
+            showError('連線斷了，不確定有沒有補完。請按「重新打開這張單」看狀態；再按一次也安全，不會重複寫。', [reopen(), listButton(), homeButton()])
+          })
+        }, 'primary')
+        var cancel = button('取消，回到這張單', function () { if (!busy) showDoc(r, '') })
+        render([
+          el('h2', { text: '補完並通過 ' + d.docNo }),
+          el('p', { text: left > 0
+            ? '會把剩下的 ' + left + ' 筆庫存記錄寫進去，然後把這張單改成「已通過」。寫進去之後不能自動收回。'
+            : '庫存記錄已經寫完了，這次只把這張單改成「已通過」。' }),
+          el('p', { cls: 'muted', text: '已經寫的庫存記錄不會被刪掉或改掉。' }),
+          note,
+          go,
+          cancel,
+        ])
       }
 
       var PASS_TEXT = { PURCHASE: '通過（庫存加上去）', SALE: '通過（庫存扣掉）', ADJUST: '通過（照盤到的數字調整庫存）', MOVE: '通過（搬過去）' }
@@ -2809,6 +2932,13 @@ var Core = (() => {
           el('p', { cls: 'num', text: r.period.fromDate + ' 到 ' + r.period.toDate }),
           el('p', { cls: 'muted', text: '報表只算已通過的銷貨單（以老闆按「通過」那天為準）；退回的單、還在等複核的單、盤點的損耗不在裡面。' }),
         ]
+
+        // 有幾種茶的庫存記錄壞了（切片 P7 B）：那些茶的銷貨整行不算。品名最多 5 個，後端從商品表查
+        if (typeof r.brokenProductCount === 'number' && r.brokenProductCount > 0) {
+          var broken = Array.isArray(r.brokenProductNames) ? r.brokenProductNames.filter(function (n) { return typeof n === 'string' }) : []
+          parts.push(el('div', { cls: 'box alert' }, [el('p', { cls: 'bad', text: '有 ' + r.brokenProductCount + ' 種茶的庫存記錄有問題，這些茶的銷貨沒有算進報表' +
+            (broken.length > 0 ? '：' + broken.join('、') : '') + '。請截圖給開發人員。' })]))
+        }
 
         // 提示區：只有在有的時候出現（P3-1、P3-2、P3-5）
         var notes = []
