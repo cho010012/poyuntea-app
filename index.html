@@ -1117,10 +1117,35 @@ var Core = (() => {
         call('stock').then(function (r) {
           if (!current(t)) return
           log({ step: 'stock', ok: r.ok, code: r.code, timing: r.timing })
-          if (r.ok) return showHome(r)
+          if (r.ok) return landing(r)
           if (handledAuth(r)) return
           return showError(messageFor(r.code))
         }).catch(netFailed(t, '連不到店裡的系統。請確認網路之後按「重新整理」。', [reloadButton()]))
+      }
+
+      // ---- 打開時的第一個畫面（切片 P8：推播通知的連結 ?to=review）----
+
+      // 打開這一頁時網址上的 ?to=（start 設定）。**只用一次**：之後按「回首頁」就是首頁
+      var startTo = null
+
+      /**
+       * 一打開要不要直接進「待複核」：**固定比較**，不查表 —— ?to= 是網址上的字，誰都可以改。
+       * 只有 to 剛好是 'review' **而且**角色是 OWNER 才進；店長、或任何其他值（constructor 之類）一律首頁。
+       * 角色來自後端的 stock 回應（後端驗過身分），不是網址。
+       */
+      function startsAtReview(to, role) {
+        return to === 'review' && role === 'OWNER'
+      }
+
+      function landing(r) {
+        var to = startTo
+        startTo = null
+        if (startsAtReview(to, r.role)) {
+          clearTimeout(watchdog)
+          session.stock = r
+          return openList()
+        }
+        return showHome(r)
       }
 
       function showHome(r) {
@@ -1129,7 +1154,7 @@ var Core = (() => {
         var owner = r.role === 'OWNER'
         var parts = [el('p', { cls: 'muted', text: '你好，' + r.name })]
 
-        // 老闆一打開就要看到有沒有單在等他（這一片不做推播，用這個代替）
+        // 老闆一打開就要看到有沒有單在等他（推播通知之外，打開首頁也看得到）
         if (owner && r.pendingCount > 0) {
           parts.push(el('div', { cls: 'box' }, [
             el('p', { cls: 'num', text: '有 ' + r.pendingCount + ' 張單等你複核' }),
@@ -3118,11 +3143,12 @@ var Core = (() => {
             return
           }
 
-          // 圖文選單的 ?to= 決定開哪一頁。目前一律從首頁（查庫存）開始，
-          // 進貨與待複核都從首頁的按鈕進去
+          // 圖文選單與推播通知的 ?to= 決定開哪一頁。只有「?to=review 而且是老闆」直接進待複核
+          // （推播通知的連結，切片 P8；見 landing）；其他一律從首頁開始
           var to = new URLSearchParams(location.search).get('to')
           log({ step: 'route', to: to })
 
+          startTo = to
           goHome()
         })
         .catch(function (err) {
