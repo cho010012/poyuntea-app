@@ -90,6 +90,7 @@
     pre { font-size: 14px; white-space: pre-wrap; background: #f3f3f3; padding: 8px; margin: 0; }
     /* 銷貨：被後端擋下的那一項整個框起來；老闆明細上低於建議價的項目左邊一條紅線 */
     .box.alert { border: 4px solid var(--bad); }
+    button.rejected { border: 4px solid var(--bad); }
     .item.below { border-left: 6px solid var(--bad); padding-left: 12px; }
     /* 補完中斷的「通過」（切片 P7）：可以補、已經寫完是黃色框；不能自動補用上面的紅框（.box.alert） */
     .box.warn { border: 4px solid var(--warn); background: var(--warn-bg); }
@@ -1027,11 +1028,15 @@ var Core = (() => {
       // 從這個檔抽出來單獨執行的；scripts/mutate.py 的前端突變也靠那些測試殺。要改函式的名字或
       // 縮排（六個空格、結尾那個 } 也是六個空格），要連測試一起改。
 
-      /** 打開時 ?to= 的值要去哪一頁：'sale'／'stock'／'review'／'home'。**固定比較，不查表**（網址上的字誰都可以改）。 */
+      /**
+       * 打開時 ?to= 的值要去哪一頁：'sale'／'stock'／'review'／'mine'／'home'。**固定比較，不查表**（網址上的字誰都可以改）。
+       * mine（退回通知的連結，切片 P10）**只有店長**：老闆沒有「我送出的單」這個畫面（他的清單是全部待複核）→ 首頁。
+       */
       function startPage(to, role) {
         if (to === 'sell') return 'sale'
         if (to === 'stock') return 'stock'
         if (startsAtReview(to, role)) return 'review'
+        if (to === 'mine' && role === 'MANAGER') return 'mine'
         return 'home'
       }
 
@@ -1179,6 +1184,82 @@ var Core = (() => {
         return '第 ' + n + ' 項庫存不夠扣（' + l.productName + (res.scope === 'bin' ? '，從 ' + l.binCode + ' 拿' : '') + '，' + where + how + '）。可以先通過比較早的進貨單，或退回請店長改。'
       }
 
+      // ---- 照這張重開（切片 P10）要被檢查的決定：一樣是純函式（test/ui-logic.test.js 抽出來執行）----
+
+      /** 只有這四種單有「照這張重開」。**固定對照表、hasOwnProperty**：試算表來的 docType 是 constructor 之類也查不到原型上的東西。 */
+      function canReopen(docType) {
+        var KINDS = { PURCHASE: true, SALE: true, ADJUST: true, MOVE: true }
+        return typeof docType === 'string' && Object.prototype.hasOwnProperty.call(KINDS, docType)
+      }
+
+      /** 數量的格式：數字，最多到小數兩位（跟表單的 DECIMAL_2 同一條）。 */
+      function decimal2(s) {
+        return /^\d+(\.\d{1,2})?$/.test(String(s))
+      }
+
+      /** 這種單在這個商品上可以用的單位：銷貨用 saleUnits；進貨、盤點、搬動用 purchaseUnits（同各表單的單位按鍵）。 */
+      function reopenUnits(kind, item) {
+        var list = kind === 'SALE' ? item.saleUnits : item.purchaseUnits
+        return Array.isArray(list) ? list : []
+      }
+
+      /**
+       * 「照這張重開」的表單初始資料。doc = getDoc 的回應（店長自己的退回單：每一行有 inputQty、inputUnit，
+       * 銷貨與進貨另有 amountFen）；stockItems = 查庫存的 items；newId = **新的** requestId（畫面一律傳 newRequestId()，
+       * 不沿用原本那張的：沿用的話後端會把它認成重送、回「送出了」，其實什麼都沒送）。
+       * 檢查用的函式從 h 傳進來（halfWidth、decimal2、binKey、reopenUnits、yuanText），不靠閉包。
+       *
+       * 帶不進來的那一項 —— 商品找不到（停賣的不在查庫存的清單裡）、記錄壞掉（broken）、單位不在這種單允許的單位裡、
+       * 數量／格子／目的格／金額不對 —— **留空**，項次（從 1 起算）列進 problems；其他項照帶。
+       * 銷貨的金額算「她自己填的」（touched），不會被建議價蓋掉。不是四種之一回 null。
+       */
+      function reopenDraft(doc, stockItems, newId, h) {
+        var kind = doc && doc.doc ? doc.doc.docType : null
+        if (kind !== 'PURCHASE' && kind !== 'SALE' && kind !== 'ADJUST' && kind !== 'MOVE') return null
+        var items = Array.isArray(stockItems) ? stockItems : []
+        var money = kind === 'PURCHASE' || kind === 'SALE'
+        var lines = []
+        var problems = []
+        ;(Array.isArray(doc.lines) ? doc.lines : []).forEach(function (l, i) {
+          var item = null
+          items.forEach(function (it) { if (item === null && it && it.code === l.productCode) item = it })
+          var units = item !== null && item.broken !== true ? h.reopenUnits(kind, item) : []
+          var qty = typeof l.inputQty === 'number' ? h.halfWidth(String(l.inputQty)) : ''
+          var bin = h.binKey(l.binCode)
+          var to = kind === 'MOVE' ? h.binKey(l.toBinCode) : null
+          var fen = l.amountFen
+          var ok = units.length > 0 && units.indexOf(l.inputUnit) !== -1 && h.decimal2(qty) && bin !== null &&
+            (kind === 'ADJUST' || Number(qty) > 0) &&
+            (kind !== 'MOVE' || (to !== null && to !== bin)) &&
+            (!money || (typeof fen === 'number' && Number.isSafeInteger(fen) && fen >= 0))
+          if (!ok) {
+            problems.push(i + 1)
+            if (kind === 'PURCHASE') lines.push({ code: '', bin: '', qty: '', unit: '', amount: '' })
+            else if (kind === 'SALE') lines.push({ code: '', bin: '', qty: '', unit: '', carry: '', amount: '', touched: false, gift: false, picked: false, shortcut: null })
+            else if (kind === 'ADJUST') lines.push({ code: '', bin: '', qty: '', unit: '' })
+            else lines.push({ code: '', bin: '', to: '', qty: '', unit: '' })
+            return
+          }
+          if (kind === 'PURCHASE') {
+            lines.push({ code: item.code, bin: bin, qty: qty, unit: l.inputUnit, amount: h.yuanText(fen) })
+          } else if (kind === 'SALE') {
+            var gift = l.isGift === true
+            lines.push({ code: item.code, bin: bin, qty: qty, unit: l.inputUnit, carry: '', amount: gift ? '0' : h.yuanText(fen),
+              touched: true, gift: gift, picked: true, shortcut: null })
+          } else if (kind === 'ADJUST') {
+            lines.push({ code: item.code, bin: bin, qty: qty, unit: l.inputUnit })
+          } else {
+            lines.push({ code: item.code, bin: bin, to: to, qty: qty, unit: l.inputUnit })
+          }
+        })
+        return { kind: kind, requestId: newId, lines: lines, problems: problems }
+      }
+
+      /** 送出後拿到「重送」（duplicate）而且單號就是被重開的那一張 → 當成錯誤。防禦：getDoc 不回 requestId，正常不會發生。 */
+      function reopenClash(r, reopenOf) {
+        return !!(r && r.duplicate === true && typeof reopenOf === 'string' && reopenOf !== '' && r.docNo === reopenOf)
+      }
+
       // ---- 使用者編號與複製（不在名單上時用） ----
 
       function copyButton(text) {
@@ -1279,9 +1360,9 @@ var Core = (() => {
         var t = begin()
         form = null
         showLoading()
-        // ?to=review：stock 與 listDocs 同時發出，省一次來回。listDocs 失敗（或不是老闆）就當成沒有：
-        // 只有 stock 的回應走 handledAuth（A2 只觸發一次重新打開）
-        var early = startTo === 'review'
+        // ?to=review、?to=mine（切片 P10）：stock 與 listDocs 同時發出，省一次來回。listDocs 失敗（或角色不對）
+        // 就當成沒有：只有 stock 的回應走 handledAuth（A2 只觸發一次重新打開）
+        var early = startTo === 'review' || startTo === 'mine'
           ? call('listDocs').then(function (lr) { return lr }, function () { return null })
           : null
         call('stock').then(function (r) {
@@ -1320,11 +1401,12 @@ var Core = (() => {
         var page = startPage(to, r.role)
         if (page === 'sale') return startSale()
         if (page === 'stock') return showStock(r)
-        if (page === 'review' && early) {
+        // review（老闆）→ 待複核；mine（店長，退回通知的連結）→ 我送出的單。兩者都用同時發出的那一份清單
+        if ((page === 'review' || page === 'mine') && early) {
           return early.then(function (lr) {
             if (!current(t)) return
             if (lr && lr.ok) return showList(lr)
-            showHome(r)   // 清單拿失敗：照一般方式顯示首頁（有待複核張數與「去複核」）
+            showHome(r)   // 清單拿失敗：照一般方式顯示首頁（老闆有待複核張數與「去複核」；店長有退回的紅框）
           })
         }
         return showHome(r)
@@ -1342,6 +1424,25 @@ var Core = (() => {
             el('p', { cls: 'num', text: '有 ' + r.pendingCount + ' 張單等你複核' }),
             button('去複核', function () { openList() }, 'primary'),
           ]))
+        }
+
+        // 店長（切片 P10）：最近 7 天被退回的單（後端 stock 的 myRejected，最多 5 張）與等老闆複核的張數。
+        // 欄位不在（舊後端、或單據缺欄）就不畫。原因是老闆打的字：一律 textContent
+        if (!owner) {
+          var rejected = (Array.isArray(r.myRejected) ? r.myRejected : []).filter(function (x) { return x && typeof x.docNo === 'string' })
+          if (rejected.length > 0) {
+            var kids = [el('p', { cls: 'bad', text: '有 ' + rejected.length + ' 張單被退回，請看一下' })]
+            rejected.forEach(function (x) {
+              var b = button('', function () { openDoc(x.docNo) }, 'wide')
+              b.appendChild(el('div', { cls: 'item-name', text: textOf(TYPE_TEXT, x.docType) + '　' + String(x.reviewedDate || '') + ' 退回' }))
+              b.appendChild(el('div', { text: '原因：' + String(x.reasonPreview || '') }))
+              kids.push(b)
+            })
+            parts.push(el('div', { cls: 'box alert' }, kids))
+          }
+          if (typeof r.myPendingCount === 'number' && r.myPendingCount > 0) {
+            parts.push(el('p', { cls: 'num', text: '等老闆複核：' + r.myPendingCount + ' 張' }))
+          }
         }
 
         parts.push(button('銷貨', function () { openSale() }, 'wide'))
@@ -1579,6 +1680,7 @@ var Core = (() => {
           var b = button(it.name, function () {
             if (ln.code === it.code) return   // 再點一次已經選的，什麼都不變（單位也不要被洗回預設）
             ln.code = it.code
+            ln.problem = false
             var units = it.purchaseUnits
             ln.unit = units.indexOf('台斤') !== -1 ? '台斤' : (units[0] || '')
             var here = choicesFor(it.code).here
@@ -1647,7 +1749,7 @@ var Core = (() => {
         var parts = [
           el('h2', { text: '進貨' }),
           el('p', { cls: 'muted', text: '一張最多 ' + MAX_LINES + ' 項。送出之後要等老闆按「通過」，庫存才會加上去。' }),
-        ]
+        ].concat(reopenNotes())
         if (form.message) parts.push(el('div', { cls: 'box' }, [el('p', { cls: 'bad', text: form.message })]))
         form.lines.forEach(function (ln, i) { parts.push(lineBox(ln, i)) })
 
@@ -1757,6 +1859,7 @@ var Core = (() => {
           if (!stillMine()) return
           clearTimeout(watchdog)
           log({ step: 'submitted', ok: r.ok, code: r.code })
+          if (r.ok && reopenClash(r, mine.reopenOf)) return showReopenClash(mine.reopenOf)
           if (r.ok) return showSubmitted(r)
           if (handledAuth(r)) return
           // B5：後端說第幾項有問題 → 框出那一項（訊息裡的「第 N 行」統一講「第 N 項」）
@@ -2022,9 +2125,11 @@ var Core = (() => {
       function saleLineBox(ln, i) {
         var product = productOf(ln.code)
         var locked = form.sending
-        var flagged = form.badLine === i + 1
+        var bad = form.badLine === i + 1
+        var flagged = bad || ln.problem === true
         var box = el('div', { cls: flagged ? 'box alert' : 'box' }, [el('p', { cls: 'item-name', text: '第 ' + (i + 1) + ' 項' })])
-        if (flagged && form.message) box.appendChild(el('p', { cls: 'bad', text: form.message }))
+        if (bad && form.message) box.appendChild(el('p', { cls: 'bad', text: form.message }))
+        if (!bad && flagged) box.appendChild(el('p', { cls: 'bad', text: '原本那張的這一項帶不進來，請重新選。' }))
 
         box.appendChild(el('label', { text: '商品' }))
         var pickRow = el('div', { cls: 'units' })
@@ -2032,6 +2137,7 @@ var Core = (() => {
           var b = button(it.name, function () {
             if (ln.code === it.code) return
             ln.code = it.code
+            ln.problem = false
             var units = it.saleUnits || []
             if (Core.isLooseTeaScale(it.stockUnitScale)) {
               // 散茶：還沒選份量。沿用／記住的單位只預選「其他數量」裡的單位，不填數量、不按任何快捷鍵
@@ -2228,7 +2334,7 @@ var Core = (() => {
         var parts = [
           el('h2', { text: '銷貨' }),
           el('p', { cls: 'muted', text: '一張最多 ' + MAX_LINES + ' 項。送出之後要等老闆按「通過」，庫存才會扣掉；在那之前這些量已經不能再賣給別人。' }),
-        ]
+        ].concat(reopenNotes())
         if (form.message) parts.push(el('div', { cls: 'box' }, [el('p', { cls: 'bad', text: form.message })]))
         form.lines.forEach(function (ln, i) { parts.push(saleLineBox(ln, i)) })
 
@@ -2333,6 +2439,7 @@ var Core = (() => {
           if (!stillMine()) return
           clearTimeout(watchdog)
           log({ step: 'sale-submitted', ok: r.ok, code: r.code })
+          if (r.ok && reopenClash(r, mine.reopenOf)) return showReopenClash(mine.reopenOf)
           if (r.ok) return showSubmitted(r)
           if (handledAuth(r)) return
           if (r.code === 'D6') return backToForm(notEnoughText(r, mine), r.line)
@@ -2447,6 +2554,7 @@ var Core = (() => {
           var b = button(it.name, function () {
             if (ln.code === it.code) return
             ln.code = it.code
+            ln.problem = false
             var units = it.purchaseUnits || []
             ln.unit = units.indexOf('台斤') !== -1 ? '台斤' : (units[0] || '')
             onChange(it)
@@ -2486,11 +2594,13 @@ var Core = (() => {
         return qty
       }
 
-      /** 一項的外框；被後端擋下的那一項整個框起來（同銷貨）。 */
+      /** 一項的外框；被後端擋下的那一項、照著重開時帶不進來的那一項（切片 P10）整個框起來（同銷貨）。 */
       function lineFrame(i) {
-        var flagged = form.badLine === i + 1
+        var bad = form.badLine === i + 1
+        var flagged = bad || (form.lines[i] && form.lines[i].problem === true)
         var box = el('div', { cls: flagged ? 'box alert' : 'box' }, [el('p', { cls: 'item-name', text: '第 ' + (i + 1) + ' 項' })])
-        if (flagged && form.message) box.appendChild(el('p', { cls: 'bad', text: form.message }))
+        if (bad && form.message) box.appendChild(el('p', { cls: 'bad', text: form.message }))
+        if (!bad && flagged) box.appendChild(el('p', { cls: 'bad', text: '原本那張的這一項帶不進來，請重新選。' }))
         return box
       }
 
@@ -2510,6 +2620,7 @@ var Core = (() => {
       function renderLines(title, notes, lineBox, blank, send, keepScroll) {
         var parts = [el('h2', { text: title })]
         notes.forEach(function (n) { parts.push(el('p', { cls: 'muted', text: n })) })
+        parts = parts.concat(reopenNotes())
         if (form.message) parts.push(el('div', { cls: 'box' }, [el('p', { cls: 'bad', text: form.message })]))
         form.lines.forEach(function (ln, i) { parts.push(lineBox(ln, i)) })
         if (form.lines.length < MAX_LINES) {
@@ -2570,6 +2681,7 @@ var Core = (() => {
           if (!stillMine()) return
           clearTimeout(watchdog)
           log({ step: action + '-done', ok: r.ok, code: r.code })
+          if (r.ok && reopenClash(r, mine.reopenOf)) return showReopenClash(mine.reopenOf)
           if (r.ok) return showSubmitted(r)
           if (handledAuth(r)) return
           if (r.code === 'D6' && d6Text) return backToForm(d6Text(r, mine), r.line)
@@ -2809,6 +2921,49 @@ var Core = (() => {
         sendLines('MOVE', 'submitMove', checkMoveForm, renderMoveForm, cannotMoveText)
       }
 
+      // ---- 照這張重開（切片 P10）----
+      //
+      // 店長自己被退回的單 → 打開對應的表單，每一項照原本填的帶進去（reopenDraft）。送出去是**一張新單**：
+      // 新單號、新的 requestId；原本那張維持「已退回」（後端不改它）。
+
+      /** 先拿庫存（60 秒內重用；商品、單位、格子要是現在的），再組表單。 */
+      function reopenDoc(r) {
+        openWithStock('reopen-stock', function () {
+          var d = r.doc
+          var draft = reopenDraft(r, session.stock && session.stock.items, newRequestId(), { halfWidth: halfWidth, decimal2: decimal2, binKey: binKey, reopenUnits: reopenUnits, yuanText: Core.fenToYuanText })
+          if (draft === null) return showError('這張單不能照著重開。', [listButton(), homeButton()])
+          // 帶不進來的那幾項框起來（選了商品之後就拿掉框）
+          draft.problems.forEach(function (n) { if (draft.lines[n - 1]) draft.lines[n - 1].problem = true })
+          form = {
+            kind: draft.kind, requestId: draft.requestId, lines: draft.lines, sending: false, message: '', badLine: 0, attempt: 0,
+            reopenOf: d.docNo, reopenReason: String(d.rejectReason || ''), problemCount: draft.problems.length,
+          }
+          if (draft.kind === 'PURCHASE') renderForm()
+          else if (draft.kind === 'SALE') renderSaleForm()
+          else if (draft.kind === 'ADJUST') renderCountForm()
+          else renderMoveForm()
+        })
+      }
+
+      /** 重開的表單最上面：老闆退回的原因、帶不進來的有幾項。不是重開的表單 → 空陣列。 */
+      function reopenNotes() {
+        if (!form || typeof form.reopenOf !== 'string') return []
+        var kids = [
+          el('p', { cls: 'bad', text: '老闆退回的原因：' + form.reopenReason }),
+          el('p', { cls: 'muted', text: '這是照 ' + form.reopenOf + ' 重開的新單，改好再送出；原本那張維持「已退回」。' }),
+        ]
+        if (form.problemCount > 0) {
+          kids.push(el('p', { cls: 'bad', text: '有 ' + form.problemCount + ' 項帶不進來（商品停賣或找不到、單位或格子不對），已經留空並框起來，請重新選。' }))
+        }
+        return [el('div', { cls: 'box alert' }, kids)]
+      }
+
+      /** 防禦：重開的單被後端認成原本那張的重送（reopenClash）。**不顯示「送出了」**。 */
+      function showReopenClash(docNo) {
+        form = null
+        showError('這張已經退回了，請重新按「照這張重開」。', [button('打開原本那張', function () { openDoc(docNo) }), homeButton()])
+      }
+
       // ---- 待複核（老闆）／我送出的單（店長） ----
 
       function listButton() {
@@ -2836,12 +2991,17 @@ var Core = (() => {
           parts.push(el('p', { cls: 'muted', text: owner ? '點一張單看內容，看完再決定通過或退回。' : '點一張單看內容。' }))
         }
         r.docs.forEach(function (d) {
-          var b = button('', function () { openDoc(d.docNo) }, 'wide')
+          // 店長的退回單（切片 P10）：紅框、直接列出原因。最近退回的由後端排在最前面
+          var rejected = !owner && d.status === 'REJECTED'
+          var b = button('', function () { openDoc(d.docNo) }, rejected ? 'wide rejected' : 'wide')
           // 第一行大字：類型與項數（銷貨、進貨加合計）；單號小字放最後
           b.appendChild(el('div', { cls: 'num', text: textOf(TYPE_TEXT, d.docType) + '　' + d.lineCount + ' 項' + (hasMoney(d.docType) ? '　合計 ' + d.totalText + ' 元' : '') }))
           b.appendChild(el('div', { text: d.createdByName + '　' + whenText(d.createdAt) }))
           // 老闆清單裡每一張都在等複核，不必每列都寫；店長要看得出哪一張被退回了
-          if (!owner || d.status !== 'PENDING') b.appendChild(el('div', { text: textOf(STATUS_TEXT, d.status) }))
+          if (!owner || d.status !== 'PENDING') b.appendChild(el('div', { cls: rejected ? 'bad' : undefined, text: textOf(STATUS_TEXT, d.status) }))
+          if (rejected && typeof d.rejectReason === 'string' && d.rejectReason !== '') {
+            b.appendChild(el('div', { cls: 'bad', text: '原因：' + d.rejectReason }))
+          }
           b.appendChild(el('div', { cls: 'muted', text: d.docNo }))
           parts.push(b)
         })
@@ -2900,6 +3060,11 @@ var Core = (() => {
             el('p', { cls: 'bad', text: '已退回。原因：' }),
             el('p', { text: d.rejectReason }),
           ]))
+          // 店長自己的退回單（切片 P10）：照著開一張**新單**（新單號、新 requestId），原本那張維持已退回。
+          // 只有四種單之一才有這顆鍵（canReopen：固定對照表）
+          if (!owner && canReopen(d.docType)) {
+            parts.push(button('照這張重開', function () { reopenDoc(r) }, 'primary'))
+          }
         }
         var sale = d.docType === 'SALE'
         if (sale && owner && r.lines.some(function (l) { return l.belowSuggested === true })) {
