@@ -1007,7 +1007,7 @@ var Core = (() => {
       }
 
       var TYPE_TEXT = { PURCHASE: '進貨單', SALE: '銷貨單', ADJUST: '盤點單', MOVE: '搬動單' }
-      var STATUS_TEXT = { PENDING: '等老闆複核', POSTED: '已通過', REJECTED: '已退回' }
+      // 狀態字（等老闆複核／已通過／已退回／已撤回）由 statusWord 決定（切片 P11）
 
       /** 試算表來的代碼查表。用 hasOwnProperty：'constructor' 之類的字不可以查到原型上的東西。 */
       function textOf(map, key) {
@@ -1258,6 +1258,38 @@ var Core = (() => {
       /** 送出後拿到「重送」（duplicate）而且單號就是被重開的那一張 → 當成錯誤。防禦：getDoc 不回 requestId，正常不會發生。 */
       function reopenClash(r, reopenOf) {
         return !!(r && r.duplicate === true && typeof reopenOf === 'string' && reopenOf !== '' && r.docNo === reopenOf)
+      }
+
+      // ---- 店長自己撤回（切片 P11）要被檢查的決定：一樣是純函式（test/ui-logic.test.js 抽出來執行）----
+
+      /**
+       * 「撤回這張」只在**店長**看**還在等複核**的單時出現（店長的 getDoc 本來就只回她自己的單）。
+       * 這只是畫面：真正的檢查在後端鎖內（只撤回得了自己送的、還是 PENDING 的）。
+       */
+      function canWithdraw(doc, role) {
+        return role === 'MANAGER' && !!doc && doc.status === 'PENDING'
+      }
+
+      /** 清單與單據上的狀態字。後端說是自己撤回的（withdrawn）→「已撤回」；其他照固定對照表（hasOwnProperty）。 */
+      function statusWord(doc) {
+        var TEXT = { PENDING: '等老闆複核', POSTED: '已通過', REJECTED: '已退回' }
+        var s = doc ? doc.status : ''
+        if (s === 'REJECTED' && doc.withdrawn === true) return '已撤回'
+        return Object.prototype.hasOwnProperty.call(TEXT, s) ? TEXT[s] : String(s)
+      }
+
+      /**
+       * 重開的表單最上面的說明，回 [{ cls, text }]。doc = { docNo（原本那張）, withdrawn, rejectReason }。
+       * 自己撤回的 → 不寫「老闆退回的原因」（那不是老闆退回的）。
+       */
+      function reopenNoteLines(doc) {
+        if (doc.withdrawn === true) {
+          return [{ cls: 'muted', text: '這張是你自己撤回的；原本那張維持「已撤回」。這是照 ' + doc.docNo + ' 重開的新單，改好再送出。' }]
+        }
+        return [
+          { cls: 'bad', text: '老闆退回的原因：' + doc.rejectReason },
+          { cls: 'muted', text: '這是照 ' + doc.docNo + ' 重開的新單，改好再送出；原本那張維持「已退回」。' },
+        ]
       }
 
       // ---- 使用者編號與複製（不在名單上時用） ----
@@ -2937,6 +2969,8 @@ var Core = (() => {
           form = {
             kind: draft.kind, requestId: draft.requestId, lines: draft.lines, sending: false, message: '', badLine: 0, attempt: 0,
             reopenOf: d.docNo, reopenReason: String(d.rejectReason || ''), problemCount: draft.problems.length,
+            // 自己撤回的（切片 P11）：重開的說明不寫「老闆退回的原因」
+            withdrawn: d.withdrawn === true,
           }
           if (draft.kind === 'PURCHASE') renderForm()
           else if (draft.kind === 'SALE') renderSaleForm()
@@ -2945,13 +2979,12 @@ var Core = (() => {
         })
       }
 
-      /** 重開的表單最上面：老闆退回的原因、帶不進來的有幾項。不是重開的表單 → 空陣列。 */
+      /** 重開的表單最上面：老闆退回的原因（自己撤回的寫「你自己撤回的」，reopenNoteLines）、帶不進來的有幾項。不是重開的表單 → 空陣列。 */
       function reopenNotes() {
         if (!form || typeof form.reopenOf !== 'string') return []
-        var kids = [
-          el('p', { cls: 'bad', text: '老闆退回的原因：' + form.reopenReason }),
-          el('p', { cls: 'muted', text: '這是照 ' + form.reopenOf + ' 重開的新單，改好再送出；原本那張維持「已退回」。' }),
-        ]
+        var kids = reopenNoteLines({ docNo: form.reopenOf, withdrawn: form.withdrawn === true, rejectReason: form.reopenReason }).map(function (x) {
+          return el('p', { cls: x.cls, text: x.text })
+        })
         if (form.problemCount > 0) {
           kids.push(el('p', { cls: 'bad', text: '有 ' + form.problemCount + ' 項帶不進來（商品停賣或找不到、單位或格子不對），已經留空並框起來，請重新選。' }))
         }
@@ -2962,6 +2995,111 @@ var Core = (() => {
       function showReopenClash(docNo) {
         form = null
         showError('這張已經退回了，請重新按「照這張重開」。', [button('打開原本那張', function () { openDoc(docNo) }), homeButton()])
+      }
+
+      // ---- 店長自己撤回（切片 P11）----
+      //
+      // 只有店長看自己還在等複核的單才有這顆鍵（canWithdraw）。後端把它寫成跟退回同一組欄位，所以撤回的單
+      // 一樣可以「照這張重開」。撤回不送任何推播。請求只帶單號（店長的回應裡沒有 updatedAt；看到舊畫面由 D2 擋）。
+
+      /** 確認畫面。message：按鍵上方的錯誤；hint：最上面的提示（L1 自動再試過還是沒輪到）。 */
+      function showWithdrawConfirm(r, message, hint) {
+        begin()
+        clearTimeout(watchdog)
+        var d = r.doc
+        var note = el('p', { cls: 'bad', text: message })
+        var busy = false
+        var go = button('確定撤回', function () {
+          if (busy) return
+          busy = true   // 同步擋連點
+          go.disabled = true
+          cancel.disabled = true
+          go.textContent = '撤回中…'
+          sendWithdraw(r, function (text) { go.textContent = text })
+        }, 'primary')
+        var cancel = button('不撤回', function () { if (!busy) showDoc(r, '') })
+        render([
+          el('h2', { text: '撤回這張' + textOf(TYPE_TEXT, d.docType) }),
+          hint ? el('div', { cls: 'box alert' }, [el('p', { cls: 'bad', text: hint })]) : null,
+          el('p', { cls: 'muted', text: d.docNo }),
+          el('div', { cls: 'box warn' }, [
+            el('p', { text: '撤回之後老闆就不會看到這張單。' }),
+            el('p', { cls: 'bad', text: '請馬上按『照這張重開』改好再送——撤回到重送之間，這些量可能被別張單用掉。' }),
+          ]),
+          note,
+          go,
+          cancel,
+        ])
+      }
+
+      /**
+       * 送出撤回。L1（拿不到鎖、什麼都沒寫，重試安全）：沿用 P9 的 reviewRetryPlan，等一下自動再試**一次**，
+       * 還是 L1 才回到確認畫面、提示放在最上面。D2（已經處理了）、D9（處理到一半）、D12（有較晚的盤點）：
+       * 後端的字講得出原因與下一步，照錯誤畫面顯示（沒有「照這張重開」）。
+       */
+      function sendWithdraw(r, busyText) {
+        var d = r.doc
+        var ticket = begin()
+        var reopen = function () { return button('重新打開這張單', function () { openDoc(d.docNo) }) }
+
+        function attempt(n) {
+          armWatchdog(function () {
+            if (!current(ticket)) return
+            begin()
+            showError('等太久了，不確定有沒有撤回。請按「重新打開這張單」看狀態。', [reopen(), listButton(), homeButton()])
+          })
+          call('withdraw', { docNo: d.docNo }).then(function (res) {
+            if (!current(ticket)) return
+            clearTimeout(watchdog)
+            if (res.ok) return showWithdrawn(d.docNo)
+            if (handledAuth(res)) return
+            var plan = reviewRetryPlan(res.code, n)
+            if (plan === 'retry') {
+              busyText('有人正在送單，等幾秒自動再試…')
+              setTimeout(function () { if (current(ticket)) attempt(n + 1) }, RETRY_WAIT_MS)
+              return
+            }
+            if (res.code === 'L1') {
+              return showWithdrawConfirm(r, '', '有人正在送單，系統已經自動再試過一次，還是沒輪到。請等幾秒，再按一次「確定撤回」。')
+            }
+            showError(messageOf(res), [reopen(), listButton(), homeButton()])
+          }, function (err) {
+            if (!current(ticket)) return
+            clearTimeout(watchdog)
+            if (err && err.code === 'NO_TOKEN') return reloadOnce()
+            showError('連線斷了，不確定有沒有撤回。請按「重新打開這張單」看狀態。', [reopen(), listButton(), homeButton()])
+          })
+        }
+
+        attempt(1)
+      }
+
+      /** 撤回成功：「照這張重開」（重新拿一次那張單：撤回後才有重開要的原始值）、「回我送出的單」。 */
+      function showWithdrawn(docNo) {
+        session.stockAt = null   // 佔用放出來了：重開的表單要重新拿庫存
+        render([
+          el('div', { cls: 'box' }, [
+            el('p', { cls: 'good', text: '已撤回。老闆不會再看到這張單。' }),
+            el('p', { cls: 'num', text: docNo }),
+          ]),
+          el('p', { cls: 'bad', text: '請馬上按「照這張重開」改好再送。' }),
+          button('照這張重開', function () { reopenWithdrawn(docNo) }, 'primary'),
+          listButton(),
+          homeButton(),
+        ])
+      }
+
+      function reopenWithdrawn(docNo) {
+        docBack = null
+        var t = begin()
+        showLoading()
+        var open = function () { return button('打開這張單', function () { openDoc(docNo) }) }
+        call('getDoc', { docNo: docNo }).then(function (r) {
+          if (!current(t)) return
+          if (r.ok && r.doc && r.doc.status === 'REJECTED') return reopenDoc(r)
+          if (!r.ok && handledAuth(r)) return
+          showError(r.ok ? '這張單現在不能照著重開，請打開它看看。' : messageOf(r), [open(), listButton(), homeButton()])
+        }).catch(netFailed(t, null, [button('再試一次', function () { reopenWithdrawn(docNo) }), listButton(), homeButton()]))
       }
 
       // ---- 待複核（老闆）／我送出的單（店長） ----
@@ -2991,14 +3129,15 @@ var Core = (() => {
           parts.push(el('p', { cls: 'muted', text: owner ? '點一張單看內容，看完再決定通過或退回。' : '點一張單看內容。' }))
         }
         r.docs.forEach(function (d) {
-          // 店長的退回單（切片 P10）：紅框、直接列出原因。最近退回的由後端排在最前面
-          var rejected = !owner && d.status === 'REJECTED'
+          // 店長的退回單（切片 P10）：紅框、直接列出原因。最近退回的由後端排在最前面。
+          // 自己撤回的（切片 P11，withdrawn）：寫「已撤回」，不畫紅框、不列原因
+          var rejected = !owner && d.status === 'REJECTED' && d.withdrawn !== true
           var b = button('', function () { openDoc(d.docNo) }, rejected ? 'wide rejected' : 'wide')
           // 第一行大字：類型與項數（銷貨、進貨加合計）；單號小字放最後
           b.appendChild(el('div', { cls: 'num', text: textOf(TYPE_TEXT, d.docType) + '　' + d.lineCount + ' 項' + (hasMoney(d.docType) ? '　合計 ' + d.totalText + ' 元' : '') }))
           b.appendChild(el('div', { text: d.createdByName + '　' + whenText(d.createdAt) }))
           // 老闆清單裡每一張都在等複核，不必每列都寫；店長要看得出哪一張被退回了
-          if (!owner || d.status !== 'PENDING') b.appendChild(el('div', { cls: rejected ? 'bad' : undefined, text: textOf(STATUS_TEXT, d.status) }))
+          if (!owner || d.status !== 'PENDING') b.appendChild(el('div', { cls: rejected ? 'bad' : undefined, text: statusWord(d) }))
           if (rejected && typeof d.rejectReason === 'string' && d.rejectReason !== '') {
             b.appendChild(el('div', { cls: 'bad', text: '原因：' + d.rejectReason }))
           }
@@ -3050,16 +3189,21 @@ var Core = (() => {
           el('div', { cls: 'num', text: textOf(TYPE_TEXT, d.docType) + (hasMoney(d.docType) ? '　合計 ' + d.totalText + ' 元' : '') }),
           el('div', { text: '送單人　' + d.createdByName }),
           el('div', { text: '時間　' + whenText(d.createdAt) }),
-          el('div', { cls: 'muted', text: '單號 ' + d.docNo + '　狀態：' + textOf(STATUS_TEXT, d.status) }),
+          el('div', { cls: 'muted', text: '單號 ' + d.docNo + '　狀態：' + statusWord(d) }),
         ]))
         if (d.isOwnDoc && d.status === 'PENDING') {
           parts.push(el('p', { cls: 'muted', text: '這是你自己開的單。通過之後會記下「自己核的」。' }))
         }
         if (d.status === 'REJECTED') {
-          parts.push(el('div', { cls: 'box' }, [
-            el('p', { cls: 'bad', text: '已退回。原因：' }),
-            el('p', { text: d.rejectReason }),
-          ]))
+          // 自己撤回的（切片 P11）：不是老闆退回的，不放原因框
+          if (d.withdrawn === true) {
+            parts.push(el('div', { cls: 'box' }, [el('p', { text: owner ? '已撤回（送單的人自己撤回的）。' : '已撤回（你自己撤回的）。' })]))
+          } else {
+            parts.push(el('div', { cls: 'box' }, [
+              el('p', { cls: 'bad', text: '已退回。原因：' }),
+              el('p', { text: d.rejectReason }),
+            ]))
+          }
           // 店長自己的退回單（切片 P10）：照著開一張**新單**（新單號、新 requestId），原本那張維持已退回。
           // 只有四種單之一才有這顆鍵（canReopen：固定對照表）
           if (!owner && canReopen(d.docType)) {
@@ -3103,6 +3247,10 @@ var Core = (() => {
             parts.push(pass)
             if (repair === null) parts.push(back)
           }
+        }
+        // 店長自己還在等複核的單（切片 P11）：送錯了可以自己撤回（canWithdraw；後端鎖內才是真正的檢查）
+        if (canWithdraw(d, session.stock ? session.stock.role : null)) {
+          parts.push(button('撤回這張', function () { showWithdrawConfirm(r, '', '') }))
         }
         parts.push(backFromDoc())
         parts.push(homeButton())
@@ -3321,12 +3469,12 @@ var Core = (() => {
         })
       }
 
-      /** 這張單已經被處理了（D2）：不是錯誤，不用紅字；給「看下一張」。 */
+      /** 這張單已經被處理了（D2）：不是錯誤，不用紅字；給「看下一張」。也可能是送單的人自己撤回了（切片 P11）。 */
       function showAlreadyDone(docNo) {
         clearTimeout(watchdog)
         render([
           el('div', { cls: 'box' }, [
-            el('p', { cls: 'num', text: '這張單已經處理好了（可能是另一位老闆）。' }),
+            el('p', { cls: 'num', text: '這張單已經處理好了（可能是另一位老闆，或送單的人撤回了）。' }),
             el('p', { cls: 'muted', text: docNo }),
           ]),
           nextSlot(docNo),
