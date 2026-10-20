@@ -991,6 +991,10 @@ var Core = (() => {
         S1: '試算表還沒準備好（代碼 S1），請找開發人員。',
         S2: '試算表的欄位不齊（代碼 S2）。請老闆在 Apps Script 編輯器執行一次 setup，再回來重新整理。',
         L1: '有人正在送單，請等幾秒再按一次。',
+        // 照這張重開被擋（切片 P12）。後端的回應本來就帶固定的字；這三句只在回應沒帶字時用
+        D13: '這一格在原本那張之後已經盤點過了，再送這張會重複扣（代碼 D13）。請跟老闆說。',
+        D14: '這張已經重開過了（代碼 D14）。請打開最新的那一張，從那一張重開。',
+        D15: '這張不能拿來重開（代碼 D15）。請開一張新的。',
       }
 
       function messageFor(code) {
@@ -1212,6 +1216,7 @@ var Core = (() => {
        * 帶不進來的那一項 —— 商品找不到（停賣的不在查庫存的清單裡）、記錄壞掉（broken）、單位不在這種單允許的單位裡、
        * 數量／格子／目的格／金額不對 —— **留空**，項次（從 1 起算）列進 problems；其他項照帶。
        * 銷貨的金額算「她自己填的」（touched），不會被建議價蓋掉。不是四種之一回 null。
+       * 結果的 reopenedFrom（切片 P12）＝原本那張的單號：送出時帶給後端，後端用它把這張在盤點眼裡的時間固定成原本那張的。
        */
       function reopenDraft(doc, stockItems, newId, h) {
         var kind = doc && doc.doc ? doc.doc.docType : null
@@ -1252,12 +1257,35 @@ var Core = (() => {
             lines.push({ code: item.code, bin: bin, to: to, qty: qty, unit: l.inputUnit })
           }
         })
-        return { kind: kind, requestId: newId, lines: lines, problems: problems }
+        return { kind: kind, requestId: newId, lines: lines, problems: problems, reopenedFrom: doc.doc.docNo }
       }
 
       /** 送出後拿到「重送」（duplicate）而且單號就是被重開的那一張 → 當成錯誤。防禦：getDoc 不回 requestId，正常不會發生。 */
       function reopenClash(r, reopenOf) {
         return !!(r && r.duplicate === true && typeof reopenOf === 'string' && reopenOf !== '' && r.docNo === reopenOf)
+      }
+
+      // ---- 重開不重複計算（切片 P12）要被檢查的決定：一樣是純函式（test/ui-logic.test.js 抽出來執行）----
+
+      /**
+       * 「照這張重開」的鍵：後端說可以（reopenable === true：7 天內被退回或撤回、還沒有照它重開過），**而且**是四種單之一
+       * （canReopen）。舊後端沒有這個欄位 → 不出現。只是畫面：真正的檢查在後端送出時的鎖內（D14、D15）。
+       */
+      function reopenAllowed(d) {
+        return !!d && d.reopenable === true && canReopen(d.docType)
+      }
+
+      /** 照這張重開送出被擋：D13（同格在原本那張之後已經盤點過）、D14（已經重開過）、D15（不能拿來重開）。改表單也送不出去。 */
+      function reopenStop(code) {
+        var STOP = { D13: true, D14: true, D15: true }
+        return typeof code === 'string' && Object.prototype.hasOwnProperty.call(STOP, code)
+      }
+
+      /** 送單的內容。照這張重開的表單多帶 reopenedFrom（reopenDraft 給的原本那張的單號）；一般的表單沒有這個欄位。 */
+      function submitBody(mine, lines) {
+        var body = { requestId: mine.requestId, lines: lines }
+        if (mine.reopenedFrom !== undefined) body.reopenedFrom = mine.reopenedFrom
+        return body
       }
 
       // ---- 店長自己撤回（切片 P11）要被檢查的決定：一樣是純函式（test/ui-logic.test.js 抽出來執行）----
@@ -1887,13 +1915,14 @@ var Core = (() => {
         })
 
         log({ step: 'submit', lines: checked.lines.length })
-        call('submitPurchase', { requestId: mine.requestId, lines: checked.lines }).then(function (r) {
+        call('submitPurchase', submitBody(mine, checked.lines)).then(function (r) {
           if (!stillMine()) return
           clearTimeout(watchdog)
           log({ step: 'submitted', ok: r.ok, code: r.code })
           if (r.ok && reopenClash(r, mine.reopenOf)) return showReopenClash(mine.reopenOf)
           if (r.ok) return showSubmitted(r)
           if (handledAuth(r)) return
+          if (reopenStop(r.code)) return showReopenStop(r)
           // B5：後端說第幾項有問題 → 框出那一項（訊息裡的「第 N 行」統一講「第 N 項」）
           backToForm(unifyLineWord(messageOf(r)), r.code === 'B5' ? r.line : 0)
         }, function (err) {
@@ -2467,13 +2496,14 @@ var Core = (() => {
         })
 
         log({ step: 'submit-sale', lines: checked.lines.length })
-        call('submitSale', { requestId: mine.requestId, lines: checked.lines }).then(function (r) {
+        call('submitSale', submitBody(mine, checked.lines)).then(function (r) {
           if (!stillMine()) return
           clearTimeout(watchdog)
           log({ step: 'sale-submitted', ok: r.ok, code: r.code })
           if (r.ok && reopenClash(r, mine.reopenOf)) return showReopenClash(mine.reopenOf)
           if (r.ok) return showSubmitted(r)
           if (handledAuth(r)) return
+          if (reopenStop(r.code)) return showReopenStop(r)
           if (r.code === 'D6') return backToForm(notEnoughText(r, mine), r.line)
           backToForm(messageOf(r), r.code === 'B5' ? r.line : 0)
         }, function (err) {
@@ -2709,13 +2739,14 @@ var Core = (() => {
         })
 
         log({ step: action, lines: checked.lines.length })
-        call(action, { requestId: mine.requestId, lines: checked.lines }).then(function (r) {
+        call(action, submitBody(mine, checked.lines)).then(function (r) {
           if (!stillMine()) return
           clearTimeout(watchdog)
           log({ step: action + '-done', ok: r.ok, code: r.code })
           if (r.ok && reopenClash(r, mine.reopenOf)) return showReopenClash(mine.reopenOf)
           if (r.ok) return showSubmitted(r)
           if (handledAuth(r)) return
+          if (reopenStop(r.code)) return showReopenStop(r)
           if (r.code === 'D6' && d6Text) return backToForm(d6Text(r, mine), r.line)
           backToForm(messageOf(r), r.code === 'B5' ? r.line : 0)
         }, function (err) {
@@ -2969,6 +3000,8 @@ var Core = (() => {
           form = {
             kind: draft.kind, requestId: draft.requestId, lines: draft.lines, sending: false, message: '', badLine: 0, attempt: 0,
             reopenOf: d.docNo, reopenReason: String(d.rejectReason || ''), problemCount: draft.problems.length,
+            // 切片 P12：送出時帶給後端（submitBody）
+            reopenedFrom: draft.reopenedFrom,
             // 自己撤回的（切片 P11）：重開的說明不寫「老闆退回的原因」
             withdrawn: d.withdrawn === true,
           }
@@ -2985,10 +3018,18 @@ var Core = (() => {
         var kids = reopenNoteLines({ docNo: form.reopenOf, withdrawn: form.withdrawn === true, rejectReason: form.reopenReason }).map(function (x) {
           return el('p', { cls: x.cls, text: x.text })
         })
+        // 切片 P12（R1）：重開的單在盤點眼裡算原本那張的時間 —— 拿它記一筆新的交易會讓帳變錯
+        kids.push(el('p', { cls: 'muted', text: '照這張重開只用來改正同一件事；新的交易請開一張新單。' }))
         if (form.problemCount > 0) {
           kids.push(el('p', { cls: 'bad', text: '有 ' + form.problemCount + ' 項帶不進來（商品停賣或找不到、單位或格子不對），已經留空並框起來，請重新選。' }))
         }
         return [el('div', { cls: 'box alert' }, kids)]
+      }
+
+      /** 照這張重開送出被擋（reopenStop：D13／D14／D15）：改表單也送不出去，不回表單。字是後端的固定字（textContent）。 */
+      function showReopenStop(r) {
+        form = null
+        showError(messageOf(r), [listButton(), homeButton()])
       }
 
       /** 防禦：重開的單被後端認成原本那張的重送（reopenClash）。**不顯示「送出了」**。 */
@@ -3074,7 +3115,10 @@ var Core = (() => {
         attempt(1)
       }
 
-      /** 撤回成功：「照這張重開」（重新拿一次那張單：撤回後才有重開要的原始值）、「回我送出的單」。 */
+      /**
+       * 撤回成功：「照這張重開」（重新拿一次那張單：撤回後才有重開要的原始值，也才知道後端說能不能重開 —— reopenable，
+       * 切片 P12；剛撤回的單通常可以）、「回我送出的單」。
+       */
       function showWithdrawn(docNo) {
         session.stockAt = null   // 佔用放出來了：重開的表單要重新拿庫存
         render([
@@ -3096,7 +3140,7 @@ var Core = (() => {
         var open = function () { return button('打開這張單', function () { openDoc(docNo) }) }
         call('getDoc', { docNo: docNo }).then(function (r) {
           if (!current(t)) return
-          if (r.ok && r.doc && r.doc.status === 'REJECTED') return reopenDoc(r)
+          if (r.ok && r.doc && r.doc.status === 'REJECTED' && reopenAllowed(r.doc)) return reopenDoc(r)
           if (!r.ok && handledAuth(r)) return
           showError(r.ok ? '這張單現在不能照著重開，請打開它看看。' : messageOf(r), [open(), listButton(), homeButton()])
         }).catch(netFailed(t, null, [button('再試一次', function () { reopenWithdrawn(docNo) }), listButton(), homeButton()]))
@@ -3205,9 +3249,10 @@ var Core = (() => {
             ]))
           }
           // 店長自己的退回單（切片 P10）：照著開一張**新單**（新單號、新 requestId），原本那張維持已退回。
-          // 只有四種單之一才有這顆鍵（canReopen：固定對照表）
+          // 只有四種單之一才有這顆鍵（canReopen：固定對照表）；而且後端說可以（reopenAllowed，切片 P12）
           if (!owner && canReopen(d.docType)) {
-            parts.push(button('照這張重開', function () { reopenDoc(r) }, 'primary'))
+            if (reopenAllowed(d)) parts.push(button('照這張重開', function () { reopenDoc(r) }, 'primary'))
+            else parts.push(el('p', { cls: 'muted', text: '這張不能照著重開（超過 7 天，或已經照它重開過了）。要再送請開一張新的。' }))
           }
         }
         var sale = d.docType === 'SALE'
