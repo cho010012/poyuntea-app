@@ -11,11 +11,15 @@
       --number-font-size: 24px;
       --tap-target: 56px;
       --tap-gap: 12px;
-      --ink: #1a1a1a;
-      --muted: #4a4a4a;
-      --paper: #ffffff;
-      --line: #1a1a1a;
-      --ok: #0b6b2e;
+      --ink: #2A2A22;
+      --muted: #5A5444;
+      --paper: #F7F2E7;
+      --card: #FFFDF8;
+      --line: #6B5A3C;
+      --rule: #CDBFA3;
+      --primary: #2F5A3A;
+      --on-primary: #FFFFFF;
+      --ok: #2F5A3A;
       --bad: #a4000f;
       --warn: #8a6d00;
       --warn-bg: #fff6cc;
@@ -36,7 +40,7 @@
     .muted { color: var(--muted); }
     .bad { color: var(--bad); font-weight: bold; }
     .good { color: var(--ok); font-weight: bold; }
-    .box { border: 2px solid var(--line); padding: 12px; margin-bottom: 16px; }
+    .box { border: 2px solid var(--line); background: var(--card); padding: 12px; margin-bottom: 16px; }
     .num { font-size: var(--number-font-size); font-weight: bold; }
     .uid {
       font-family: ui-monospace, Menlo, Consolas, monospace;
@@ -44,7 +48,7 @@
       word-break: break-all;
       margin: 8px 0 12px;
     }
-    .item { border-bottom: 1px solid #bbb; padding: 12px 0; }
+    .item { border-bottom: 1px solid var(--rule); padding: 12px 0; }
     .item:last-child { border-bottom: none; }
     .item-name { font-weight: bold; }
     .bin { font-size: 20px; font-weight: bold; margin: 16px 0 4px; }
@@ -56,11 +60,11 @@
       /* 水平與垂直間距都要給（Node 版的教訓：只給下方間距時按鍵是邊貼邊的） */
       margin: 0 var(--tap-gap) var(--tap-gap) 0;
       padding: 0 20px;
-      background: var(--paper);
+      background: var(--card);
       color: var(--ink);
-      border: 2px solid var(--ink);
+      border: 2px solid var(--line);
     }
-    button.primary { background: var(--ink); color: var(--paper); font-weight: bold; }
+    button.primary { background: var(--primary); color: var(--on-primary); border-color: var(--primary); font-weight: bold; }
     button:disabled { opacity: 0.6; }
     /* 整列寬的按鍵（清單上的每一張單）。右邊不留間距，不然 375px 寬會多出水平捲動 */
     button.wide { display: block; width: 100%; margin-right: 0; padding: 12px; text-align: left; }
@@ -72,26 +76,36 @@
       font-size: var(--body-font-size);
       padding: 8px 12px;
       margin: 0 0 var(--tap-gap);
-      border: 2px solid var(--ink);
-      background: var(--paper);
+      border: 2px solid var(--line);
+      background: var(--card);
       color: var(--ink);
     }
     input.num-input { font-size: var(--number-font-size); }
     textarea { min-height: 120px; }
     /* 單位是一排按鍵，不是下拉選單：iPhone 的下拉選單會跳出要用手指轉的滾輪，
        違反「只能點、不能滑」（規格 §6）；而且收起來時只看得到目前選的那一個，
-       實機上老闆以為只有「台斤」可以選。選中的那顆整顆反黑。 */
+       實機上老闆以為只有「台斤」可以選。選中的那顆整顆填深茶綠、白字、粗體（沒選的是淺底＋木色框）。 */
     .units { margin: 0 0 var(--tap-gap); }
-    .units button[aria-pressed="true"] { background: var(--ink); color: var(--paper); font-weight: bold; }
+    .units button[aria-pressed="true"] { background: var(--primary); color: var(--on-primary); font-weight: bold; }
     /* 商品也是一排按鍵（同樣的理由：進貨表單裡的商品原本是下拉選單）。約十項、
        換行排列；名字很長時按鍵自己換行，最寬不超過一整列，不撐破 375px。
        min-height 不是 height：換成兩行時按鍵跟著變高，上下留 8px 才不貼字。 */
     .units button { max-width: 100%; padding-top: 8px; padding-bottom: 8px; overflow-wrap: anywhere; }
-    pre { font-size: 14px; white-space: pre-wrap; background: #f3f3f3; padding: 8px; margin: 0; }
+    pre { font-size: 14px; white-space: pre-wrap; background: var(--card); padding: 8px; margin: 0; }
     /* 銷貨：被後端擋下的那一項整個框起來；老闆明細上低於建議價的項目左邊一條紅線 */
     .box.alert { border: 4px solid var(--bad); }
     button.rejected { border: 4px solid var(--bad); }
     .item.below { border-left: 6px solid var(--bad); padding-left: 12px; }
+    /* 表單版面（切片 P13）：選好的收成一行、底部大按鍵。 */
+    .chosen { display: flex; flex-wrap: wrap; align-items: center; column-gap: 12px; margin: 12px 0 4px; }
+    .chosen button { margin-bottom: 0; }
+    .chosen .pick-label { font-weight: bold; }
+    /* 整列寬的動作鍵：再加一項、送出。兩顆之間至少 24px，免得按錯 */
+    button.full { display: block; width: 100%; margin-right: 0; text-align: center; }
+    button.again { margin-top: 16px; margin-bottom: 24px; }
+    button.submit { min-height: 72px; margin-bottom: 16px; }
+    details.help { margin: 0 0 12px; }
+    summary { min-height: var(--tap-target); padding: 12px 0; box-sizing: border-box; cursor: pointer; }
     /* 補完中斷的「通過」（切片 P7）：可以補、已經寫完是黃色框；不能自動補用上面的紅框（.box.alert） */
     .box.warn { border: 4px solid var(--warn); background: var(--warn-bg); }
   </style>
@@ -1288,6 +1302,153 @@ var Core = (() => {
         return body
       }
 
+      // ---- 表單版面（切片 P13）要被檢查的決定：一樣是純函式（test/form-layout.test.js 抽出來執行）----
+
+      /**
+       * 這一項的「只看這一項」送出檢查：回 null（填完了），或跟送出時**同一句**的訊息（含「第 N 項」）。
+       * 四個 check…Form 逐項呼叫它：順序、訊息跟原本各自的檢查一模一樣；唯一的跨項規則（盤點同商品同格重複）
+       * 留在 checkCountForm，只在送出時檢查。項次與要用的函式都從 ctx 傳進來（不靠閉包）：
+       * { index（從 1 起算）, productOf, sellableBins, movableBins, binKey, halfWidth, decimal2, fenOf, saleBaseQty }。
+       */
+      function lineProblem(kind, ln, ctx) {
+        var at = ctx.index
+        var n = '第 ' + at + ' 項：'
+        var product = ctx.productOf(ln.code)
+        if (!product) return n + '請選商品。'
+        var q
+        if (kind === 'PURCHASE') {
+          if (ctx.halfWidth(ln.bin) === '') return n + '請選放在哪一格，或打一個格子，例如 A-01。'
+          q = ctx.halfWidth(ln.qty)
+          if (!ctx.decimal2(q) || !(Number(q) > 0)) return n + '數量要填大於零的數字，最多到小數兩位。'
+          if (ctx.fenOf(ln.amount) === null) return n + '請填這一項花了多少錢（元），最多到小數兩位；沒花錢就填 0。'
+          return null
+        }
+        if (kind === 'SALE') {
+          var bins = ctx.sellableBins(ln.code)
+          if (bins.length === 0) return n + '這個商品現在沒有可以賣的，請換一個商品，或刪掉這一項。'
+          if (!bins.some(function (b) { return b.binCode === ln.bin })) return n + '請選從哪一格拿。'
+          // 散茶一項還沒選份量（沒按快捷鍵、也沒按「其他數量」）：不可以默默送出 1 台斤
+          var pending = saleLineProblem(ln, Core.isLooseTeaScale(product.stockUnitScale))
+          if (pending) return '第 ' + at + ' 項' + pending
+          q = ctx.halfWidth(ln.qty)
+          if (!ctx.decimal2(q) || !(Number(q) > 0)) return n + '數量要填大於零的數字，最多到小數兩位。'
+          if (!Core.isLooseTeaScale(product.stockUnitScale) && !Number.isInteger(Number(q))) {
+            return n + '這個商品只能一個一個算，數量不能有小數。'
+          }
+          if ((product.saleUnits || []).indexOf(ln.unit) === -1) return n + '請選單位。'
+          if (ctx.saleBaseQty(ln, product) === null) return n + '這個數量換算不出來，請換個數字。'
+          var fen = ln.gift ? 0 : ctx.fenOf(ln.amount)
+          if (fen === null) return n + '請填這一項賣了多少錢（元），最多到小數兩位。'
+          if (fen === 0 && !ln.gift) return n + '金額是 0 元。如果是送的，請按「這一項是送的」。'
+          return null
+        }
+        if (kind === 'ADJUST') {
+          if (ctx.binKey(ln.bin) === null) return n + '請選哪一格，或打一個格子，例如 A-01。'
+          q = ctx.halfWidth(ln.qty)
+          if (!ctx.decimal2(q)) return n + '請填這一格實際有多少（數字，最多到小數兩位）；沒有了就按「這一格沒有了」。'
+          if (!Core.isLooseTeaScale(product.stockUnitScale) && !Number.isInteger(Number(q))) {
+            return n + '這個商品只能一個一個算，數量不能有小數。'
+          }
+          if ((product.purchaseUnits || []).indexOf(ln.unit) === -1) return n + '請選單位。'
+          return null
+        }
+        var from = ctx.movableBins(ln.code)
+        if (from.length === 0) return n + '這個商品現在沒有可以搬的，請換一個商品，或刪掉這一項。'
+        if (!from.some(function (b) { return b.binCode === ln.bin })) return n + '請選從哪一格搬。'
+        var to = ctx.binKey(ln.to)
+        if (to === null) return n + '請選搬到哪一格，或打一個格子，例如 B-01。'
+        if (to === ln.bin) return n + '從哪一格和搬到哪一格是同一格，不用搬。'
+        q = ctx.halfWidth(ln.qty)
+        if (!ctx.decimal2(q) || !(Number(q) > 0)) return n + '數量要填大於零的數字，最多到小數兩位。'
+        if (!Core.isLooseTeaScale(product.stockUnitScale) && !Number.isInteger(Number(q))) {
+          return n + '這個商品只能一個一個算，數量不能有小數。'
+        }
+        if ((product.purchaseUnits || []).indexOf(ln.unit) === -1) return n + '請選單位。'
+        return null
+      }
+
+      /**
+       * 收起來的那一行摘要（只會被「填完」的項目呼叫）。用表單裡填的值直接組；金額用 Core.fenToYuanText
+       * （跟清單、成功畫面同一個格式）。**盤點不顯示任何帳上數量**（規格 §4.4）。
+       * h：{ index（項次，可省）, halfWidth, binKey, fenOf }。商品名是試算表來的字，畫面一律用 textContent 放。
+       */
+      function lineSummary(kind, ln, products, h) {
+        var name = ''
+        ;(Array.isArray(products) ? products : []).forEach(function (p) { if (name === '' && p && p.code === ln.code) name = p.name })
+        var SEP = '　'
+        var q = String(Number(h.halfWidth(ln.qty)))
+        var bin = h.binKey(ln.bin) || h.halfWidth(ln.bin)
+        var head = (h.index ? h.index + '. ' : '') + name
+        if (kind === 'MOVE') return head + SEP + bin + ' → ' + (h.binKey(ln.to) || h.halfWidth(ln.to)) + SEP + q + ' ' + ln.unit
+        if (kind === 'ADJUST') return head + SEP + bin + SEP + '盤到 ' + q + ' ' + ln.unit
+        var money = kind === 'SALE' && ln.gift === true ? '送的' : Core.fenToYuanText(h.fenOf(ln.amount)) + ' 元'
+        return head + SEP + bin + SEP + q + ' ' + ln.unit + SEP + money
+      }
+
+      /**
+       * 這張單的合計（銷貨、進貨）：{ text: '合計 X 元' }；有任何一項金額還沒填好 → { text: '合計還不完整' }；
+       * 盤點、搬動沒有金額 → null。金額解析用 h.fenOf（就是畫面上送出檢查用的 fenOf：全形轉半形、兩位小數、Core.yuanToFen）；
+       * 送的那一項算 0。加總與顯示都是「分」→ Core.fenToYuanText（跟清單的合計同一個格式）。
+       */
+      function formTotal(kind, lines, h) {
+        if (kind !== 'PURCHASE' && kind !== 'SALE') return null
+        var sum = 0
+        var list = Array.isArray(lines) ? lines : []
+        for (var i = 0; i < list.length; i++) {
+          var fen = kind === 'SALE' && list[i].gift === true ? 0 : h.fenOf(list[i].amount)
+          if (fen === null) return { text: '合計還不完整' }
+          sum += fen
+        }
+        return { text: '合計 ' + Core.fenToYuanText(sum) + ' 元' }
+      }
+
+      /** 底部大按鍵上的字：銷貨、進貨「送出（N 項，合計 X 元）」；盤點、搬動「送出（N 項）」。 */
+      function submitLabel(kind, lines, h) {
+        var total = formTotal(kind, lines, h)
+        return total === null ? '送出（' + lines.length + ' 項）' : '送出（' + lines.length + ' 項，' + total.text + '）'
+      }
+
+      /**
+       * 收合規則（計畫「收合規則（狀態模型）」）：回新的攤開集合 { expanded: [項目編號…] }（照項目順序）。**只回畫面狀態**。
+       * state：{ lines: [{ id（固定編號）, problem（lineProblem 的結果：null 或訊息）}…], expanded: [編號…] }。
+       * 只有「填完」（problem 是 null）的項目能收起：
+       *   open     新的表單：第 1 項攤開
+       *   add      再加一項：攤開的有任何一項沒填完 → 擋下，回 { expanded（不變）, message, line }；全部填完 → 舊的都收起、只有新的 newId 攤開
+       *   edit     按某一項的〔改〕：它攤開；其他攤開的、沒填完的維持攤開，填完的收起
+       *   error    送出時錯誤指到第 line 項（line ≥ 1）→ 那一項加進攤開；0 或沒有 → 不變
+       *   reopen   重開帶進來的：在 problems（項次）裡、或 problem 不是 null 的都攤開；其餘收起
+       *   delete   刪掉編號 id 那一項（用編號記，不用位置：刪掉前面一項，攤開的仍然是它自己）
+       */
+      function expandedAfter(action, state) {
+        var lines = Array.isArray(state && state.lines) ? state.lines : []
+        var open = Array.isArray(state && state.expanded) ? state.expanded : []
+        var type = action && action.type
+        function pick(keep) { return { expanded: lines.filter(keep).map(function (l) { return l.id }) } }
+        if (type === 'open') return pick(function (l, i) { return i === 0 })
+        if (type === 'add') {
+          for (var i = 0; i < lines.length; i++) {
+            if (open.indexOf(lines[i].id) !== -1 && lines[i].problem !== null) {
+              return { expanded: open.slice(), message: lines[i].problem, line: i + 1 }
+            }
+          }
+          return { expanded: [action.newId] }
+        }
+        if (type === 'edit') {
+          return pick(function (l) { return l.id === action.id || (open.indexOf(l.id) !== -1 && l.problem !== null) })
+        }
+        if (type === 'error') {
+          var at = action.line
+          var target = typeof at === 'number' && at >= 1 && at <= lines.length ? lines[at - 1].id : null
+          return pick(function (l) { return open.indexOf(l.id) !== -1 || l.id === target })
+        }
+        if (type === 'reopen') {
+          var bad = Array.isArray(action.problems) ? action.problems : []
+          return pick(function (l, i) { return bad.indexOf(i + 1) !== -1 || l.problem !== null })
+        }
+        if (type === 'delete') return pick(function (l) { return l.id !== action.id && open.indexOf(l.id) !== -1 })
+        return { expanded: open.slice() }
+      }
+
       // ---- 店長自己撤回（切片 P11）要被檢查的決定：一樣是純函式（test/ui-logic.test.js 抽出來執行）----
 
       /**
@@ -1720,13 +1881,179 @@ var Core = (() => {
         if (items.length === 0) {
           return showError('還沒有任何商品可以進貨。請先在試算表的「商品」分頁加一列，再回來重新整理。', [homeButton(), reloadButton()])
         }
-        form = { requestId: newRequestId(), lines: [blankLine()], sending: false, message: '', badLine: 0, attempt: 0 }
+        form = numberLines({ kind: 'PURCHASE', requestId: newRequestId(), lines: [blankLine()], sending: false, message: '', badLine: 0, attempt: 0 })
         renderForm()
       }
 
-      /** 任何一格被改了。 */
+      /** 任何一格被改了。送出鍵上的「幾項、合計多少」跟著現在填的走（打字的時候不重畫，所以直接改那顆鍵的字）。 */
       function edited() {
         form.requestId = newRequestId()
+        var go = document.querySelector('#app button.submit')
+        if (go && !form.sending) go.textContent = submitLabel(form.kind, form.lines, { fenOf: fenOf })
+      }
+
+      // ---- 表單版面（切片 P13）：選好的收起來 ----
+      //
+      // 每一項是「攤開」或「收起」（form.expanded：項目的固定編號）；商品與格子選好之後另外收成一行
+      // （form.picking：按了〔換商品〕〔換格子〕才再攤開）。這些**只是畫面狀態**：一律經過 showLines，
+      // 它不呼叫 edited、不碰 requestId —— 資料沒變就沿用同一個 requestId（P1 起的規則）。
+
+      /** lineProblem 要用的東西（項次 + 各種檢查用的函式）。i 從 0 起算。 */
+      function lineCtx(i) {
+        return { index: i + 1, productOf: productOf, sellableBins: sellableBins, movableBins: movableBins, binKey: binKey,
+          halfWidth: halfWidth, decimal2: decimal2, fenOf: fenOf, saleBaseQty: saleBaseQty }
+      }
+
+      /** 這張表單每一項現在填完了沒有，給 expandedAfter 用。 */
+      function expandState(f) {
+        return {
+          lines: f.lines.map(function (ln, i) { return { id: ln.id, problem: lineProblem(f.kind, ln, lineCtx(i)) } }),
+          expanded: f.expanded,
+        }
+      }
+
+      /** 每一項有固定的編號（建立時給、刪除不重排）；新的表單只有第 1 項攤開。 */
+      function numberLines(f) {
+        f.nextId = 0
+        f.lines.forEach(function (ln) { ln.id = ++f.nextId })
+        f.expanded = expandedAfter({ type: 'open' }, { lines: f.lines.map(function (ln) { return { id: ln.id, problem: null } }), expanded: [] }).expanded
+        f.picking = {}
+        f.helpOpen = false
+        return f
+      }
+
+      /** 某一個選擇器（商品、格子）要不要攤開：key 是「項目編號:欄位」。 */
+      function isPicking(f, key) {
+        return Object.prototype.hasOwnProperty.call(f.picking || {}, key)
+      }
+
+      /** 回一份新的攤開記錄：key 設成 on（true 攤開、false 收起）。 */
+      function pickingWith(f, key, on) {
+        var out = {}
+        Object.keys(f.picking || {}).forEach(function (k) { if (k !== key) out[k] = true })
+        if (on) out[key] = true
+        return out
+      }
+
+      /** 回一份新的攤開記錄：這一項的商品與格子選擇器全部收起（換了商品之後，格子要重選）。 */
+      function pickingClearedFor(f, id) {
+        var out = {}
+        Object.keys(f.picking || {}).forEach(function (k) { if (k.indexOf(id + ':') !== 0) out[k] = true })
+        return out
+      }
+
+      /** 重畫現在這張表單（依種類）。 */
+      function rerenderForm(keepScroll) {
+        if (form.kind === 'PURCHASE') return renderForm(keepScroll)
+        if (form.kind === 'SALE') return renderSaleForm(keepScroll)
+        if (form.kind === 'ADJUST') return renderCountForm(keepScroll)
+        return renderMoveForm(keepScroll)
+      }
+
+      /** 收起／攤開的唯一出口：只改畫面狀態、重畫（留在原來的捲動位置）。 */
+      function showLines(f, expanded, picking) {
+        f.expanded = expanded
+        if (picking !== undefined) f.picking = picking
+        rerenderForm(true)
+      }
+
+      /** 〔改〕：這一項攤開，其他填完的收起。 */
+      function onEditLine(f, ln) {
+        showLines(f, expandedAfter({ type: 'edit', id: ln.id }, expandState(f)).expanded)
+      }
+
+      /** 〔換商品〕：這一項的商品按鍵再攤開。 */
+      function onChangeProduct(f, ln) {
+        showLines(f, f.expanded, pickingWith(f, ln.id + ':code', true))
+      }
+
+      /** 〔換格子〕：field 是 bin（格子）或 to（搬到哪一格）。 */
+      function onChangeBin(f, ln, field) {
+        showLines(f, f.expanded, pickingWith(f, ln.id + ':' + field, true))
+      }
+
+      /**
+       * 「再加一項」：攤開的有任何一項沒填完 → 擋下，顯示那一項的訊息（跟送出時同一句）、框紅、捲到那裡；
+       * 全部填完 → 攤開的都收起成摘要，加一個新的攤開項。加了一項 = 內容變了，換新的 requestId（跟原本一樣）。
+       */
+      function onAddLine(blank) {
+        if (form.sending) return
+        var f = form
+        var id = (f.nextId || 0) + 1
+        var next = expandedAfter({ type: 'add', newId: id }, expandState(f))
+        if (next.message) {
+          f.message = next.message
+          f.badLine = next.line
+          return rerenderForm(false)
+        }
+        f.nextId = id
+        var ln = blank(f.lines[f.lines.length - 1])
+        ln.id = id
+        f.lines.push(ln)
+        f.message = ''
+        f.badLine = 0
+        edited()
+        showLines(f, next.expanded)
+        var box = document.querySelector('#app [data-line="' + f.lines.length + '"]')
+        if (box && typeof box.scrollIntoView === 'function') box.scrollIntoView({ block: 'start' })
+      }
+
+      /** 這一項有問題（送出前的檢查、後端回第 N 項）：訊息、框紅、攤開那一項。N 是 0 或沒有 → 只有訊息，收合不變。 */
+      function flagLine(f, message, line) {
+        f.message = message
+        f.badLine = line || 0
+        f.expanded = expandedAfter({ type: 'error', line: f.badLine }, expandState(f)).expanded
+      }
+
+      /** 選好的那一行：「商品：阿里山高山烏龍　〔換商品〕」。value 是試算表來的字，用 textContent。 */
+      function chosenRow(label, value, changeText, onChange, locked) {
+        var change = button(changeText, onChange)
+        change.disabled = locked
+        return el('div', { cls: 'chosen' }, [
+          el('span', { cls: 'pick-label', text: label + '：' }),
+          el('strong', { text: value }),
+          change,
+        ])
+      }
+
+      /** 商品：選好就收成一行；還沒選、或按了〔換商品〕才列全部按鍵。 */
+      function productRow(box, ln, locked, onChange) {
+        var product = productOf(ln.code)
+        if (product && !isPicking(form, ln.id + ':code')) {
+          box.appendChild(chosenRow('商品', product.name, '換商品', function () { onChangeProduct(form, ln) }, locked))
+          return
+        }
+        box.appendChild(el('label', { text: '商品' }))
+        box.appendChild(productPicker(ln, locked, onChange))
+      }
+
+      /** 格子（按鍵＋打字框那一種）：用按鍵選好就收成一行；打字框打的格子不收。 */
+      function binRow(box, ln, field, label, shortLabel, codes, others, locked) {
+        var all = codes.concat(others || [])
+        if (ln[field] !== '' && all.indexOf(ln[field]) !== -1 && !isPicking(form, ln.id + ':' + field)) {
+          box.appendChild(chosenRow(shortLabel, ln[field], '換格子', function () { onChangeBin(form, ln, field) }, locked))
+          return
+        }
+        box.appendChild(el('label', { text: label }))
+        box.appendChild(binPicker(ln, field, codes, locked, null, others))
+      }
+
+      /** 收起來的一項：一行摘要＋〔改〕。 */
+      function summaryBox(ln, i) {
+        var box = el('div', { cls: 'box' })
+        box.setAttribute('data-line', String(i + 1))
+        var h = { index: i + 1, halfWidth: halfWidth, binKey: binKey, fenOf: fenOf }
+        box.appendChild(el('p', { cls: 'item-name', text: lineSummary(form.kind, ln, usableItems(), h) }))
+        var edit = button('改', function () { onEditLine(form, ln) })
+        edit.setAttribute('aria-label', '改第 ' + (i + 1) + ' 項')
+        edit.disabled = form.sending
+        box.appendChild(edit)
+        return box
+      }
+
+      /** 這一項要攤開嗎：記錄說攤開，或者還沒填完（沒填完的不能收）。 */
+      function isOpenLine(ln, i) {
+        return form.expanded.indexOf(ln.id) !== -1 || lineProblem(form.kind, ln, lineCtx(i)) !== null
       }
 
       function lineBox(ln, i) {
@@ -1734,32 +2061,20 @@ var Core = (() => {
         var locked = form.sending
         var box = lineFrame(i)
 
-        box.appendChild(el('label', { text: '商品' }))
-        var pickRow = el('div', { cls: 'units' })
-        usableItems().forEach(function (it) {
-          var b = button(it.name, function () {
-            if (ln.code === it.code) return   // 再點一次已經選的，什麼都不變（單位也不要被洗回預設）
-            ln.code = it.code
-            ln.problem = false
-            var units = it.purchaseUnits
-            ln.unit = units.indexOf('台斤') !== -1 ? '台斤' : (units[0] || '')
-            var here = choicesFor(it.code).here
-            ln.bin = here.length === 1 ? here[0] : ''   // 只在一格就自動選好
-            edited()
-            renderForm(true)   // 單位那一排跟著商品變
-          })
-          b.setAttribute('aria-pressed', String(it.code === ln.code))
-          b.disabled = locked
-          pickRow.appendChild(b)
+        productRow(box, ln, locked, function (it) {
+          var units = it.purchaseUnits
+          ln.unit = units.indexOf('台斤') !== -1 ? '台斤' : (units[0] || '')
+          var here = choicesFor(it.code).here
+          ln.bin = here.length === 1 ? here[0] : ''   // 只在一格就自動選好
+          renderForm(true)   // 單位那一排跟著商品變
         })
-        box.appendChild(pickRow)
 
-        box.appendChild(el('label', { text: '放在哪一格' }))
         if (!product) {
+          box.appendChild(el('label', { text: '放在哪一格' }))
           box.appendChild(el('p', { cls: 'muted', text: '先選商品，這裡才會出現格子' }))
         } else {
           var ch = choicesFor(product.code)
-          box.appendChild(binPicker(ln, 'bin', ch.here, locked, null, ch.others))
+          binRow(box, ln, 'bin', '放在哪一格', '格子', ch.here, ch.others, locked)
         }
 
         box.appendChild(el('label', { text: '數量' }))
@@ -1800,41 +2115,20 @@ var Core = (() => {
         amount.addEventListener('input', function () { ln.amount = amount.value; edited() })
         box.appendChild(amount)
 
-        if (form.lines.length > 1) box.appendChild(deleteButton(i, renderForm))
+        if (form.lines.length > 1) box.appendChild(deleteButton(i))
         return box
       }
 
-      /** 錯誤訊息在最上面，所以有訊息時捲回頂端；其他重畫留在原位。 */
       function renderForm(keepScroll) {
-        var parts = [
-          el('h2', { text: '進貨' }),
-          el('p', { cls: 'muted', text: '一張最多 ' + MAX_LINES + ' 項。送出之後要等老闆按「通過」，庫存才會加上去。' }),
-        ].concat(reopenNotes())
-        if (form.message) parts.push(el('div', { cls: 'box' }, [el('p', { cls: 'bad', text: form.message })]))
-        form.lines.forEach(function (ln, i) { parts.push(lineBox(ln, i)) })
-
-        if (form.lines.length < MAX_LINES) {
-          var more = button('再加一項', function () {
-            if (form.sending) return
-            form.lines.push(blankLine())
-            edited()
-            renderForm(true)
-          })
-          more.disabled = form.sending
-          parts.push(more)
-        }
-        var send = button(form.sending ? '送出中…' : '送出', submitPurchase, 'primary')
-        send.disabled = form.sending
-        parts.push(send)
-        parts.push(homeButton('回首頁（不送出）'))
-        render(parts, keepScroll)
-        scrollToFlagged(keepScroll)
+        renderLines('PURCHASE', '進貨', el('p', { cls: 'muted', text: '送出後等老闆通過，庫存才會加。' }), [
+          '一張最多 ' + MAX_LINES + ' 項。送出之後要等老闆按「通過」，庫存才會加上去。',
+        ], lineBox, blankLine, { submit: submitPurchase }, keepScroll)
       }
 
-      /** 錯誤重畫之後（不是 keepScroll 的重畫）捲到被框起來的那一項，讓他一眼看到哪裡要改。 */
+      /** 錯誤重畫之後（不是 keepScroll 的重畫）捲到出問題的那一項本身（不是畫面上第一個紅框）。 */
       function scrollToFlagged(keepScroll) {
         if (keepScroll || !form || !(form.badLine > 0)) return
-        var box = document.querySelector('#app .box.alert')
+        var box = document.querySelector('#app [data-line="' + form.badLine + '"]')
         if (box && typeof box.scrollIntoView === 'function') box.scrollIntoView({ block: 'start' })
       }
 
@@ -1868,15 +2162,9 @@ var Core = (() => {
         var out = []
         for (var i = 0; i < form.lines.length; i++) {
           var ln = form.lines[i]
-          var at = i + 1
-          var n = '第 ' + at + ' 項：'
-          if (!productOf(ln.code)) return { message: n + '請選商品。', line: at }
-          if (halfWidth(ln.bin) === '') return { message: n + '請選放在哪一格，或打一個格子，例如 A-01。', line: at }
-          var q = halfWidth(ln.qty)
-          if (!DECIMAL_2.test(q) || !(Number(q) > 0)) return { message: n + '數量要填大於零的數字，最多到小數兩位。', line: at }
-          var fen = fenOf(ln.amount)
-          if (fen === null) return { message: n + '請填這一項花了多少錢（元），最多到小數兩位；沒花錢就填 0。', line: at }
-          out.push({ productCode: ln.code, binCode: halfWidth(ln.bin), inputQty: Number(q), inputUnit: ln.unit, amountFen: fen })
+          var problem = lineProblem('PURCHASE', ln, lineCtx(i))
+          if (problem) return { message: problem, line: i + 1 }
+          out.push({ productCode: ln.code, binCode: halfWidth(ln.bin), inputQty: Number(halfWidth(ln.qty)), inputUnit: ln.unit, amountFen: fenOf(ln.amount) })
         }
         return { lines: out }
       }
@@ -1886,8 +2174,7 @@ var Core = (() => {
         if (form === null || form.sending) return
         var checked = checkForm()
         if (checked.message) {
-          form.message = checked.message
-          form.badLine = checked.line || 0
+          flagLine(form, checked.message, checked.line)
           return renderForm()
         }
         var mine = form
@@ -1903,8 +2190,7 @@ var Core = (() => {
         function backToForm(message, line) {
           mine.attempt++
           mine.sending = false
-          mine.message = message
-          mine.badLine = line || 0
+          flagLine(mine, message, line)
           begin()
           renderForm()
         }
@@ -2179,76 +2465,63 @@ var Core = (() => {
         if (usableItems().length === 0) {
           return showError('還沒有任何商品可以賣。請先在試算表的「商品」分頁加一列，再回來重新整理。', [homeButton(), reloadButton()])
         }
-        form = { kind: 'SALE', requestId: newRequestId(), lines: [blankSaleLine()], sending: false, message: '', badLine: 0, attempt: 0 }
+        form = numberLines({ kind: 'SALE', requestId: newRequestId(), lines: [blankSaleLine()], sending: false, message: '', badLine: 0, attempt: 0 })
         renderSaleForm()
       }
 
       function saleLineBox(ln, i) {
         var product = productOf(ln.code)
         var locked = form.sending
-        var bad = form.badLine === i + 1
-        var flagged = bad || ln.problem === true
-        var box = el('div', { cls: flagged ? 'box alert' : 'box' }, [el('p', { cls: 'item-name', text: '第 ' + (i + 1) + ' 項' })])
-        if (bad && form.message) box.appendChild(el('p', { cls: 'bad', text: form.message }))
-        if (!bad && flagged) box.appendChild(el('p', { cls: 'bad', text: '原本那張的這一項帶不進來，請重新選。' }))
+        var box = lineFrame(i)
 
-        box.appendChild(el('label', { text: '商品' }))
-        var pickRow = el('div', { cls: 'units' })
-        usableItems().forEach(function (it) {
-          var b = button(it.name, function () {
-            if (ln.code === it.code) return
-            ln.code = it.code
-            ln.problem = false
-            var units = it.saleUnits || []
-            if (Core.isLooseTeaScale(it.stockUnitScale)) {
-              // 散茶：還沒選份量。沿用／記住的單位只預選「其他數量」裡的單位，不填數量、不按任何快捷鍵
-              var allowed = units.filter(function (u) { return Core.SALE_UNITS.indexOf(u) !== -1 })
-              var pre = allowed.indexOf(ln.carry) !== -1 ? ln.carry : rememberedSaleUnit(it.code)
-              var start = initialSaleLine(pre, allowed)
-              ln.qty = start.qty
-              ln.unit = start.unit === null ? '' : start.unit
-              ln.picked = start.picked
-            } else {
-              ln.qty = ''
-              ln.unit = units[0] || ''
-              ln.picked = true   // 計件商品沒有快捷鍵，數量自己填
-            }
-            ln.shortcut = null
-            var bins = sellableBins(it.code)
-            ln.bin = bins.length === 1 ? bins[0].binCode : ''
-            ln.touched = false
-            ln.gift = false
-            autoAmount(ln)
-            edited()
-            renderSaleForm(true)   // 格子與單位那兩排跟著商品變
-          })
-          b.setAttribute('aria-pressed', String(it.code === ln.code))
-          b.disabled = locked
-          pickRow.appendChild(b)
+        productRow(box, ln, locked, function (it) {
+          var units = it.saleUnits || []
+          if (Core.isLooseTeaScale(it.stockUnitScale)) {
+            // 散茶：還沒選份量。沿用／記住的單位只預選「其他數量」裡的單位，不填數量、不按任何快捷鍵
+            var allowed = units.filter(function (u) { return Core.SALE_UNITS.indexOf(u) !== -1 })
+            var pre = allowed.indexOf(ln.carry) !== -1 ? ln.carry : rememberedSaleUnit(it.code)
+            var start = initialSaleLine(pre, allowed)
+            ln.qty = start.qty
+            ln.unit = start.unit === null ? '' : start.unit
+            ln.picked = start.picked
+          } else {
+            ln.qty = ''
+            ln.unit = units[0] || ''
+            ln.picked = true   // 計件商品沒有快捷鍵，數量自己填
+          }
+          ln.shortcut = null
+          var bins = sellableBins(it.code)
+          ln.bin = bins.length === 1 ? bins[0].binCode : ''
+          ln.touched = false
+          ln.gift = false
+          autoAmount(ln)
+          renderSaleForm(true)   // 格子與單位那兩排跟著商品變
         })
-        box.appendChild(pickRow)
 
-        box.appendChild(el('label', { text: '從哪一格拿' }))
         if (!product) {
+          box.appendChild(el('label', { text: '從哪一格拿' }))
           box.appendChild(el('p', { cls: 'muted', text: '先選商品，這裡才會出現可以拿的格子' }))
         } else {
           var bins = sellableBins(product.code)
           if (bins.length === 0) {
+            box.appendChild(el('label', { text: '從哪一格拿' }))
             box.appendChild(el('p', { cls: 'bad', text: '這個商品現在沒有可以賣的。' }))
+          } else if (ln.bin !== '' && bins.some(function (bn) { return bn.binCode === ln.bin }) && !isPicking(form, ln.id + ':bin')) {
+            box.appendChild(chosenRow('格子', ln.bin, '換格子', function () { onChangeBin(form, ln, 'bin') }, locked))
           } else {
-            var binRow = el('div', { cls: 'units' })
-            var binButtons = bins.map(function (bn) {
+            box.appendChild(el('label', { text: '從哪一格拿' }))
+            var binButtons = el('div', { cls: 'units' })
+            bins.forEach(function (bn) {
               var b = button(bn.binCode + '（還能賣 ' + bn.availableText + '）', function () {
                 ln.bin = bn.binCode
-                binButtons.forEach(function (x) { x.setAttribute('aria-pressed', String(x === b)) })
                 edited()
+                showLines(form, form.expanded, pickingWith(form, ln.id + ':bin', false))   // 選好了收成一行
               })
               b.setAttribute('aria-pressed', String(bn.binCode === ln.bin))
               b.disabled = locked
-              binRow.appendChild(b)
-              return b
+              binButtons.appendChild(b)
             })
-            box.appendChild(binRow)
+            box.appendChild(binButtons)
           }
         }
 
@@ -2377,44 +2650,14 @@ var Core = (() => {
         })
         refresh()
 
-        if (form.lines.length > 1) {
-          var del = button('刪掉這一項', function () {
-            if (form.sending) return
-            form.lines.splice(i, 1)
-            form.badLine = 0
-            edited()
-            renderSaleForm(true)
-          })
-          del.disabled = locked
-          box.appendChild(del)
-        }
+        if (form.lines.length > 1) box.appendChild(deleteButton(i))
         return box
       }
 
       function renderSaleForm(keepScroll) {
-        var parts = [
-          el('h2', { text: '銷貨' }),
-          el('p', { cls: 'muted', text: '一張最多 ' + MAX_LINES + ' 項。送出之後要等老闆按「通過」，庫存才會扣掉；在那之前這些量已經不能再賣給別人。' }),
-        ].concat(reopenNotes())
-        if (form.message) parts.push(el('div', { cls: 'box' }, [el('p', { cls: 'bad', text: form.message })]))
-        form.lines.forEach(function (ln, i) { parts.push(saleLineBox(ln, i)) })
-
-        if (form.lines.length < MAX_LINES) {
-          var more = button('再加一項', function () {
-            if (form.sending) return
-            form.lines.push(blankSaleLine(form.lines[form.lines.length - 1]))
-            edited()
-            renderSaleForm(true)
-          })
-          more.disabled = form.sending
-          parts.push(more)
-        }
-        var send = button(form.sending ? '送出中…' : '送出', submitSale, 'primary')
-        send.disabled = form.sending
-        parts.push(send)
-        parts.push(homeButton('回首頁（不送出）'))
-        render(parts, keepScroll)
-        scrollToFlagged(keepScroll)
+        renderLines('SALE', '銷貨', el('p', { cls: 'muted', text: '送出後等老闆通過，庫存才會扣。' }), [
+          '一張最多 ' + MAX_LINES + ' 項。送出之後要等老闆按「通過」，庫存才會扣掉；在那之前這些量已經不能再賣給別人。',
+        ], saleLineBox, blankSaleLine, { submit: submitSale }, keepScroll)
       }
 
       /** 送出前在手機上先擋明顯的錯（真正的規則在後端）。回 { lines } 或 { message, line }。 */
@@ -2422,27 +2665,10 @@ var Core = (() => {
         var out = []
         for (var i = 0; i < form.lines.length; i++) {
           var ln = form.lines[i]
-          var at = i + 1
-          var n = '第 ' + at + ' 項：'
-          var product = productOf(ln.code)
-          if (!product) return { message: n + '請選商品。', line: at }
-          var bins = sellableBins(ln.code)
-          if (bins.length === 0) return { message: n + '這個商品現在沒有可以賣的，請換一個商品，或刪掉這一項。', line: at }
-          if (!bins.some(function (b) { return b.binCode === ln.bin })) return { message: n + '請選從哪一格拿。', line: at }
-          // 散茶一項還沒選份量（沒按快捷鍵、也沒按「其他數量」）：不可以默默送出 1 台斤
-          var pending = saleLineProblem(ln, Core.isLooseTeaScale(product.stockUnitScale))
-          if (pending) return { message: '第 ' + at + ' 項' + pending, line: at }
-          var q = halfWidth(ln.qty)
-          if (!DECIMAL_2.test(q) || !(Number(q) > 0)) return { message: n + '數量要填大於零的數字，最多到小數兩位。', line: at }
-          if (!Core.isLooseTeaScale(product.stockUnitScale) && !Number.isInteger(Number(q))) {
-            return { message: n + '這個商品只能一個一個算，數量不能有小數。', line: at }
-          }
-          if ((product.saleUnits || []).indexOf(ln.unit) === -1) return { message: n + '請選單位。', line: at }
-          if (saleBaseQty(ln, product) === null) return { message: n + '這個數量換算不出來，請換個數字。', line: at }
-          var fen = ln.gift ? 0 : fenOf(ln.amount)
-          if (fen === null) return { message: n + '請填這一項賣了多少錢（元），最多到小數兩位。', line: at }
-          if (fen === 0 && !ln.gift) return { message: n + '金額是 0 元。如果是送的，請按「這一項是送的」。', line: at }
-          out.push({ productCode: ln.code, binCode: ln.bin, inputQty: Number(q), inputUnit: ln.unit, amountFen: fen, isGift: ln.gift })
+          var problem = lineProblem('SALE', ln, lineCtx(i))
+          if (problem) return { message: problem, line: i + 1 }
+          out.push({ productCode: ln.code, binCode: ln.bin, inputQty: Number(halfWidth(ln.qty)), inputUnit: ln.unit,
+            amountFen: ln.gift ? 0 : fenOf(ln.amount), isGift: ln.gift })
         }
         return { lines: out }
       }
@@ -2467,8 +2693,7 @@ var Core = (() => {
         if (form === null || form.kind !== 'SALE' || form.sending) return
         var checked = checkSaleForm()
         if (checked.message) {
-          form.message = checked.message
-          form.badLine = checked.line || 0
+          flagLine(form, checked.message, checked.line)
           return renderSaleForm()
         }
         rememberSaleUnits(checked.lines)
@@ -2484,8 +2709,7 @@ var Core = (() => {
         function backToForm(message, line) {
           mine.attempt++
           mine.sending = false
-          mine.message = message
-          mine.badLine = line || 0
+          flagLine(mine, message, line)
           begin()
           renderSaleForm()
         }
@@ -2574,9 +2798,9 @@ var Core = (() => {
             var b = button(c, function () {
               ln[field] = c
               typed.value = ''
-              buttons.forEach(function (x) { x.setAttribute('aria-pressed', String(x === b)) })
               edited()
               if (onPick) onPick()
+              showLines(form, form.expanded, pickingWith(form, ln.id + ':' + field, false))   // 選好了收成一行
             })
             b.setAttribute('aria-pressed', String(c === ln[field]))
             b.disabled = locked
@@ -2609,16 +2833,18 @@ var Core = (() => {
         return wrap
       }
 
-      /** 商品按鍵一排。選了別的商品 → onChange（重畫：格子與單位跟著商品變）。 */
+      /** 商品按鍵一排。選了別的商品 → onChange（重畫：格子與單位跟著商品變）；再點一次已經選的 → 只是收起來。 */
       function productPicker(ln, locked, onChange) {
         var row = el('div', { cls: 'units' })
         usableItems().forEach(function (it) {
           var b = button(it.name, function () {
-            if (ln.code === it.code) return
+            // 再點一次已經選的，什麼都不變（單位也不要被洗回預設），只收成一行
+            if (ln.code === it.code) return showLines(form, form.expanded, pickingWith(form, ln.id + ':code', false))
             ln.code = it.code
             ln.problem = false
             var units = it.purchaseUnits || []
             ln.unit = units.indexOf('台斤') !== -1 ? '台斤' : (units[0] || '')
+            form.picking = pickingClearedFor(form, ln.id)   // 商品選好了收成一行；換了商品，格子也重選
             onChange(it)
             edited()
           })
@@ -2656,49 +2882,55 @@ var Core = (() => {
         return qty
       }
 
-      /** 一項的外框；被後端擋下的那一項、照著重開時帶不進來的那一項（切片 P10）整個框起來（同銷貨）。 */
+      /**
+       * 一項的外框；被後端擋下的那一項、照著重開時帶不進來的那一項（切片 P10）整個框起來。
+       * data-line 讓「捲到第 N 項」找得到那一項本身（不是畫面上第一個紅框）。
+       */
       function lineFrame(i) {
         var bad = form.badLine === i + 1
         var flagged = bad || (form.lines[i] && form.lines[i].problem === true)
         var box = el('div', { cls: flagged ? 'box alert' : 'box' }, [el('p', { cls: 'item-name', text: '第 ' + (i + 1) + ' 項' })])
+        box.setAttribute('data-line', String(i + 1))
         if (bad && form.message) box.appendChild(el('p', { cls: 'bad', text: form.message }))
-        if (!bad && flagged) box.appendChild(el('p', { cls: 'bad', text: '原本那張的這一項帶不進來，請重新選。' }))
+        if (!bad && flagged) box.appendChild(el('p', { cls: 'bad', text: form.lines[i].note || '原本那張的這一項帶不進來，請重新選。' }))
         return box
       }
 
-      function deleteButton(i, rerender) {
+      function deleteButton(i) {
         var del = button('刪掉這一項', function () {
           if (form.sending) return
+          var id = form.lines[i].id
           form.lines.splice(i, 1)
           form.badLine = 0
           edited()
-          rerender(true)
+          showLines(form, expandedAfter({ type: 'delete', id: id }, expandState(form)).expanded)
         })
         del.disabled = form.sending
         return del
       }
 
-      /** 表單的外殼：標題、說明、錯誤、每一項、加一項、送出、回首頁。 */
-      function renderLines(title, notes, lineBox, blank, send, keepScroll) {
-        var parts = [el('h2', { text: title })]
-        notes.forEach(function (n) { parts.push(el('p', { cls: 'muted', text: n })) })
+      /**
+       * 表單的外殼：標題、回首頁、一行重點（其餘的說明收在「說明」裡）、重開的提醒、錯誤、每一項
+       * （填完的收成一行）、再加一項、大大的送出（寫著幾項、合計多少）。
+       */
+      function renderLines(kind, title, oneLine, details, lineBox, blank, send, keepScroll) {
+        var f = form
+        var parts = [el('h2', { text: title }), homeButton('回首頁（不送出）'), oneLine]
+        var help = el('details', { cls: 'help' }, [el('summary', { text: '說明' })].concat(details.map(function (t) { return el('p', { cls: 'muted', text: t }) })))
+        help.open = f.helpOpen === true
+        help.addEventListener('toggle', function () { f.helpOpen = help.open })
+        parts.push(help)
         parts = parts.concat(reopenNotes())
         if (form.message) parts.push(el('div', { cls: 'box' }, [el('p', { cls: 'bad', text: form.message })]))
-        form.lines.forEach(function (ln, i) { parts.push(lineBox(ln, i)) })
+        form.lines.forEach(function (ln, i) { parts.push(isOpenLine(ln, i) ? lineBox(ln, i) : summaryBox(ln, i)) })
         if (form.lines.length < MAX_LINES) {
-          var more = button('再加一項', function () {
-            if (form.sending) return
-            form.lines.push(blank(form.lines[form.lines.length - 1]))
-            edited()
-            send.rerender(true)
-          })
+          var more = button('再加一項', function () { onAddLine(blank) }, 'full again')
           more.disabled = form.sending
           parts.push(more)
         }
-        var go = button(form.sending ? '送出中…' : '送出', send.submit, 'primary')
+        var go = button(form.sending ? '送出中…' : submitLabel(kind, form.lines, { fenOf: fenOf }), send.submit, 'primary full submit')
         go.disabled = form.sending
         parts.push(go)
-        parts.push(homeButton('回首頁（不送出）'))
         render(parts, keepScroll)
         scrollToFlagged(keepScroll)
       }
@@ -2711,8 +2943,7 @@ var Core = (() => {
         if (form === null || form.kind !== kind || form.sending) return
         var checked = check()
         if (checked.message) {
-          form.message = checked.message
-          form.badLine = checked.line || 0
+          flagLine(form, checked.message, checked.line)
           return rerender()
         }
         var mine = form
@@ -2727,8 +2958,7 @@ var Core = (() => {
         function backToForm(message, line) {
           mine.attempt++
           mine.sending = false
-          mine.message = message
-          mine.badLine = line || 0
+          flagLine(mine, message, line)
           begin()
           rerender()
         }
@@ -2770,7 +3000,7 @@ var Core = (() => {
 
       function openCount() {
         openWithStock('count-stock', function () {
-          form = { kind: 'ADJUST', requestId: newRequestId(), lines: [blankCountLine()], sending: false, message: '', badLine: 0, attempt: 0 }
+          form = numberLines({ kind: 'ADJUST', requestId: newRequestId(), lines: [blankCountLine()], sending: false, message: '', badLine: 0, attempt: 0 })
           renderCountForm()
         })
       }
@@ -2780,15 +3010,14 @@ var Core = (() => {
         var locked = form.sending
         var box = lineFrame(i)
 
-        box.appendChild(el('label', { text: '商品' }))
-        box.appendChild(productPicker(ln, locked, function () { ln.bin = ''; renderCountForm(true) }))
+        productRow(box, ln, locked, function () { ln.bin = ''; renderCountForm(true) })
 
-        box.appendChild(el('label', { text: '哪一格' }))
         if (!product) {
+          box.appendChild(el('label', { text: '哪一格' }))
           box.appendChild(el('p', { cls: 'muted', text: '先選商品，這裡才會出現格子' }))
         } else {
           var cc = choicesFor(product.code)
-          box.appendChild(binPicker(ln, 'bin', cc.here, locked, null, cc.others))
+          binRow(box, ln, 'bin', '哪一格', '格子', cc.here, cc.others, locked)
         }
 
         box.appendChild(el('label', { text: '這一格實際有多少' }))
@@ -2809,16 +3038,17 @@ var Core = (() => {
           box.appendChild(unitButtonsFor(ln, product, locked))
         }
 
-        if (form.lines.length > 1) box.appendChild(deleteButton(i, renderCountForm))
+        if (form.lines.length > 1) box.appendChild(deleteButton(i))
         return box
       }
 
       function renderCountForm(keepScroll) {
-        renderLines('盤點', [
+        var one = el('p', { cls: 'muted' }, [el('span', { text: '填這一格' }), el('strong', { text: '實際' }), el('span', { text: '有多少，不用看帳上。' })])
+        renderLines('ADJUST', '盤點', one, [
           '一格一格盤：填「這一格現在實際有多少」。一張最多 ' + MAX_LINES + ' 項。',
           '從開始點貨到按「送出」，這一格不要出貨、也不要送別的單。',
           '送出之後要等老闆按「通過」，庫存才會照你盤到的數字調整。新進的貨請用進貨單。',
-        ], countLineBox, blankCountLine, { submit: submitCountForm, rerender: renderCountForm }, keepScroll)
+        ], countLineBox, blankCountLine, { submit: submitCountForm }, keepScroll)
       }
 
       /** 送出前在手機上先擋明顯的錯（真正的規則在後端）。0 是合法的。 */
@@ -2828,23 +3058,15 @@ var Core = (() => {
         for (var i = 0; i < form.lines.length; i++) {
           var ln = form.lines[i]
           var at = i + 1
-          var n = '第 ' + at + ' 項：'
-          var product = productOf(ln.code)
-          if (!product) return { message: n + '請選商品。', line: at }
-          var bin = binKey(ln.bin)
-          if (bin === null) return { message: n + '請選哪一格，或打一個格子，例如 A-01。', line: at }
-          var q = halfWidth(ln.qty)
-          if (!DECIMAL_2.test(q)) return { message: n + '請填這一格實際有多少（數字，最多到小數兩位）；沒有了就按「這一格沒有了」。', line: at }
-          if (!Core.isLooseTeaScale(product.stockUnitScale) && !Number.isInteger(Number(q))) {
-            return { message: n + '這個商品只能一個一個算，數量不能有小數。', line: at }
-          }
-          if ((product.purchaseUnits || []).indexOf(ln.unit) === -1) return { message: n + '請選單位。', line: at }
-          var key = ln.code + '|' + bin
+          var problem = lineProblem('ADJUST', ln, lineCtx(i))
+          if (problem) return { message: problem, line: at }
+          // 唯一的跨項規則：同一個商品、同一格不能出現兩次（只在送出時檢查）
+          var key = ln.code + '|' + binKey(ln.bin)
           if (Object.prototype.hasOwnProperty.call(seen, key)) {
-            return { message: n + '同一個商品、同一格已經在第 ' + seen[key] + ' 項了，請合併成一項。', line: at }
+            return { message: '第 ' + at + ' 項：同一個商品、同一格已經在第 ' + seen[key] + ' 項了，請合併成一項。', line: at }
           }
           seen[key] = at
-          out.push({ productCode: ln.code, binCode: halfWidth(ln.bin), inputQty: Number(q), inputUnit: ln.unit })
+          out.push({ productCode: ln.code, binCode: halfWidth(ln.bin), inputQty: Number(halfWidth(ln.qty)), inputUnit: ln.unit })
         }
         return { lines: out }
       }
@@ -2872,7 +3094,7 @@ var Core = (() => {
 
       function openMove() {
         openWithStock('move-stock', function () {
-          form = { kind: 'MOVE', requestId: newRequestId(), lines: [blankMoveLine()], sending: false, message: '', badLine: 0, attempt: 0 }
+          form = numberLines({ kind: 'MOVE', requestId: newRequestId(), lines: [blankMoveLine()], sending: false, message: '', badLine: 0, attempt: 0 })
           renderMoveForm()
         })
       }
@@ -2882,26 +3104,31 @@ var Core = (() => {
         var locked = form.sending
         var box = lineFrame(i)
 
-        box.appendChild(el('label', { text: '商品' }))
-        box.appendChild(productPicker(ln, locked, function () {
+        productRow(box, ln, locked, function () {
           var from = movableBins(ln.code)
           ln.bin = from.length === 1 ? from[0].binCode : ''
           ln.to = ''
           renderMoveForm(true)
-        }))
+        })
 
-        box.appendChild(el('label', { text: '從哪一格搬' }))
         if (!product) {
+          box.appendChild(el('label', { text: '從哪一格搬' }))
           box.appendChild(el('p', { cls: 'muted', text: '先選商品，這裡才會出現可以搬的格子' }))
         } else {
           var from = movableBins(product.code)
           if (from.length === 0) {
+            box.appendChild(el('label', { text: '從哪一格搬' }))
             box.appendChild(el('p', { cls: 'bad', text: '這個商品現在沒有可以搬的。' }))
+          } else if (ln.bin !== '' && from.some(function (bn) { return bn.binCode === ln.bin }) && !isPicking(form, ln.id + ':bin')) {
+            box.appendChild(chosenRow('從哪一格', ln.bin, '換格子', function () { onChangeBin(form, ln, 'bin') }, locked))
           } else {
+            box.appendChild(el('label', { text: '從哪一格搬' }))
             var fromRow = el('div', { cls: 'units' })
             from.forEach(function (bn) {
               var b = button(bn.binCode + '（還能搬 ' + bn.availableText + '）', function () {
-                if (ln.bin === bn.binCode) return
+                var closed = pickingWith(form, ln.id + ':bin', false)
+                if (ln.bin === bn.binCode) return showLines(form, form.expanded, closed)   // 再點一次已經選的：只是收起來
+                form.picking = closed
                 ln.bin = bn.binCode
                 if (binKey(ln.to) === ln.bin) ln.to = ''
                 edited()
@@ -2915,13 +3142,13 @@ var Core = (() => {
           }
         }
 
-        box.appendChild(el('label', { text: '搬到哪一格' }))
         if (!product) {
+          box.appendChild(el('label', { text: '搬到哪一格' }))
           box.appendChild(el('p', { cls: 'muted', text: '先選商品，這裡才會出現格子' }))
         } else {
           var mc = choicesFor(product.code)
           var notFrom = function (c) { return c !== ln.bin }
-          box.appendChild(binPicker(ln, 'to', mc.here.filter(notFrom), locked, null, mc.others.filter(notFrom)))
+          binRow(box, ln, 'to', '搬到哪一格', '搬到哪一格', mc.here.filter(notFrom), mc.others.filter(notFrom), locked)
         }
 
         box.appendChild(el('label', { text: '搬多少' }))
@@ -2934,38 +3161,24 @@ var Core = (() => {
           box.appendChild(unitButtonsFor(ln, product, locked))
         }
 
-        if (form.lines.length > 1) box.appendChild(deleteButton(i, renderMoveForm))
+        if (form.lines.length > 1) box.appendChild(deleteButton(i))
         return box
       }
 
       function renderMoveForm(keepScroll) {
-        renderLines('搬動', [
+        renderLines('MOVE', '搬動', el('p', { cls: 'muted', text: '先把茶搬好，再送這張單。' }), [
           '先把貨搬好，再送搬動單。一張最多 ' + MAX_LINES + ' 項。',
           '送出之後要等老闆按「通過」，庫存才會搬過去；在那之前，這些量不能再從原來那一格賣出或搬走。',
-        ], moveLineBox, blankMoveLine, { submit: submitMoveForm, rerender: renderMoveForm }, keepScroll)
+        ], moveLineBox, blankMoveLine, { submit: submitMoveForm }, keepScroll)
       }
 
       function checkMoveForm() {
         var out = []
         for (var i = 0; i < form.lines.length; i++) {
           var ln = form.lines[i]
-          var at = i + 1
-          var n = '第 ' + at + ' 項：'
-          var product = productOf(ln.code)
-          if (!product) return { message: n + '請選商品。', line: at }
-          var from = movableBins(ln.code)
-          if (from.length === 0) return { message: n + '這個商品現在沒有可以搬的，請換一個商品，或刪掉這一項。', line: at }
-          if (!from.some(function (b) { return b.binCode === ln.bin })) return { message: n + '請選從哪一格搬。', line: at }
-          var to = binKey(ln.to)
-          if (to === null) return { message: n + '請選搬到哪一格，或打一個格子，例如 B-01。', line: at }
-          if (to === ln.bin) return { message: n + '從哪一格和搬到哪一格是同一格，不用搬。', line: at }
-          var q = halfWidth(ln.qty)
-          if (!DECIMAL_2.test(q) || !(Number(q) > 0)) return { message: n + '數量要填大於零的數字，最多到小數兩位。', line: at }
-          if (!Core.isLooseTeaScale(product.stockUnitScale) && !Number.isInteger(Number(q))) {
-            return { message: n + '這個商品只能一個一個算，數量不能有小數。', line: at }
-          }
-          if ((product.purchaseUnits || []).indexOf(ln.unit) === -1) return { message: n + '請選單位。', line: at }
-          out.push({ productCode: ln.code, binCode: ln.bin, toBinCode: halfWidth(ln.to), inputQty: Number(q), inputUnit: ln.unit })
+          var problem = lineProblem('MOVE', ln, lineCtx(i))
+          if (problem) return { message: problem, line: i + 1 }
+          out.push({ productCode: ln.code, binCode: ln.bin, toBinCode: halfWidth(ln.to), inputQty: Number(halfWidth(ln.qty)), inputUnit: ln.unit })
         }
         return { lines: out }
       }
@@ -2997,18 +3210,21 @@ var Core = (() => {
           if (draft === null) return showError('這張單不能照著重開。', [listButton(), homeButton()])
           // 帶不進來的那幾項框起來（選了商品之後就拿掉框）
           draft.problems.forEach(function (n) { if (draft.lines[n - 1]) draft.lines[n - 1].problem = true })
-          form = {
+          form = numberLines({
             kind: draft.kind, requestId: draft.requestId, lines: draft.lines, sending: false, message: '', badLine: 0, attempt: 0,
             reopenOf: d.docNo, reopenReason: String(d.rejectReason || ''), problemCount: draft.problems.length,
             // 切片 P12：送出時帶給後端（submitBody）
             reopenedFrom: draft.reopenedFrom,
             // 自己撤回的（切片 P11）：重開的說明不寫「老闆退回的原因」
             withdrawn: d.withdrawn === true,
-          }
-          if (draft.kind === 'PURCHASE') renderForm()
-          else if (draft.kind === 'SALE') renderSaleForm()
-          else if (draft.kind === 'ADJUST') renderCountForm()
-          else renderMoveForm()
+          })
+          // 重開帶進來的：有問題的（帶不進來，或現在的檢查不過，例如金額 0 沒勾送的）攤開並框紅，全部合格的收起來
+          var state = expandState(form)
+          form.expanded = expandedAfter({ type: 'reopen', problems: draft.problems }, state).expanded
+          state.lines.forEach(function (x, i) {
+            if (x.problem !== null && !form.lines[i].problem) { form.lines[i].problem = true; form.lines[i].note = x.problem }
+          })
+          rerenderForm()
         })
       }
 
