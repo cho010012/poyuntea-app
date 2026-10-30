@@ -38,6 +38,7 @@
     h2 { font-size: 20px; margin: 24px 0 12px; }
     p { margin: 0 0 12px; }
     .muted { color: var(--muted); }
+    .small { font-size: 16px; }
     .bad { color: var(--bad); font-weight: bold; }
     .good { color: var(--ok); font-weight: bold; }
     .box { border: 2px solid var(--line); background: var(--card); padding: 12px; margin-bottom: 16px; }
@@ -116,7 +117,7 @@
     <p class="num">正在讀取…</p>
   </main>
 
-  <details id="diag-box" class="box">
+  <details id="diag-box" class="box" hidden>
     <summary>給開發人員看的診斷資料</summary>
     <pre id="diag"></pre>
   </details>
@@ -894,6 +895,15 @@ var Core = (() => {
         document.getElementById('diag').textContent = JSON.stringify(diag, null, 2)
       }
 
+      /**
+       * 「給開發人員看的診斷資料」（#diag-box，#app 外面的靜態區塊）只在出錯的畫面出現（切片 P15）：
+       * render 每次畫畫面先把它藏起來；只有 showError 與「不在名單上」（A3）的畫面打開它。
+       */
+      function showDiag(on) {
+        var box = document.getElementById('diag-box')
+        if (box) box.hidden = !on
+      }
+
       // ---- 畫面工具：一律用 textContent / createElement，禁止 innerHTML（§5.5）----
       //
       // 商品名、退回原因、姓名都是從試算表來的字，老闆或店長打什麼就是什麼（F19）。
@@ -937,6 +947,7 @@ var Core = (() => {
       function render(children, keepScroll) {
         // 任何一次重畫都代表離開了報表畫面（報表畫面自己重畫完才設回 true）
         showingProfit = false
+        showDiag(false)
         var app = document.getElementById('app')
         while (app.firstChild) app.removeChild(app.firstChild)
         app.appendChild(el('h1', { text: '柏雲茶帳本' }))
@@ -994,16 +1005,20 @@ var Core = (() => {
       function showError(message, buttons) {
         clearTimeout(watchdog)
         render([el('div', { cls: 'box' }, [el('p', { cls: 'bad', text: message })])].concat(buttons || [reloadButton()]))
+        showDiag(true)
       }
 
       // ---- 錯誤代碼 → 給人看的話（每個代碼對應唯一一種處置，見 gas/auth.gs）----
 
       var MESSAGES = {
-        A1: '系統設定還沒完成（代碼 A1），請找開發人員。',
+        A1: '系統這邊出了狀況，請把這個畫面截圖，傳給幫你設定系統的人（代碼 A1）。',
         A4: '暫時連不到 LINE，請等一下再按「重新整理」。',
-        A6: '系統設定有誤（代碼 A6），請找開發人員。',
-        S1: '試算表還沒準備好（代碼 S1），請找開發人員。',
-        S2: '試算表的欄位不齊（代碼 S2）。請老闆在 Apps Script 編輯器執行一次 setup，再回來重新整理。',
+        A6: '系統這邊出了狀況，請把這個畫面截圖，傳給幫你設定系統的人（代碼 A6）。',
+        S1: '系統這邊出了狀況，請把這個畫面截圖，傳給幫你設定系統的人（代碼 S1）。',
+        S2: '系統這邊出了狀況，請把這個畫面截圖，傳給幫你設定系統的人（代碼 S2）。',
+        E1: '系統這邊出了狀況，請把這個畫面截圖，傳給幫你設定系統的人（代碼 E1）。',
+        D4: '系統這邊出了狀況，請把這個畫面截圖，傳給幫你設定系統的人（代碼 D4）。',
+        D8: '系統這邊出了狀況，請把這個畫面截圖，傳給幫你設定系統的人（代碼 D8）。',
         L1: '有人正在送單，請等幾秒再按一次。',
         // 照這張重開被擋（切片 P12）。後端的回應本來就帶固定的字；這三句只在回應沒帶字時用
         D13: '這一格在原本那張之後已經盤點過了，再送這張會重複扣（代碼 D13）。請跟老闆說。',
@@ -1012,6 +1027,8 @@ var Core = (() => {
       }
 
       function messageFor(code) {
+        var plain = plainSystemText(code)
+        if (plain !== null) return plain
         return MESSAGES[code] || '系統出錯了（代碼 ' + code + '），請等一下再按「重新整理」。'
       }
 
@@ -1020,6 +1037,8 @@ var Core = (() => {
        * 有就用它 —— 它講得出是第幾行、下一步怎麼做；沒有才用代碼對照表。
        */
       function messageOf(r) {
+        var plain = plainSystemText(r && r.code)
+        if (plain !== null) return plain
         if (r && typeof r.message === 'string' && r.message !== '' && r.message.length <= 200 && r.code !== 'E1') return r.message
         return messageFor(r && r.code)
       }
@@ -1047,15 +1066,117 @@ var Core = (() => {
       // 縮排（六個空格、結尾那個 } 也是六個空格），要連測試一起改。
 
       /**
-       * 打開時 ?to= 的值要去哪一頁：'sale'／'stock'／'review'／'mine'／'home'。**固定比較，不查表**（網址上的字誰都可以改）。
+       * 打開時 ?to= 的值要去哪一頁：'sale'／'stock'／'review'／'mine'／'profit'／'count'／'buy'／'home'。**固定比較，不查表**（網址上的字誰都可以改）。
        * mine（退回通知的連結，切片 P10）**只有店長**：老闆沒有「我送出的單」這個畫面（他的清單是全部待複核）→ 首頁。
+       * 切片 P15（圖文選單 6 格）：profit 只有老闆（本月利潤；店長 → 首頁，後端本來也擋）、count、buy 各自的表單、
+       * review 的店長 → 我送出的單（跟 mine 一樣）。老闆的 review 還是由 startsAtReview 決定（上面那一行不動）。
        */
       function startPage(to, role) {
         if (to === 'sell') return 'sale'
         if (to === 'stock') return 'stock'
         if (startsAtReview(to, role)) return 'review'
         if (to === 'mine' && role === 'MANAGER') return 'mine'
+        if (to === 'profit' && role === 'OWNER') return 'profit'
+        if (to === 'count') return 'count'
+        if (to === 'buy') return 'buy'
+        if (to === 'review' && role === 'MANAGER') return 'mine'
         return 'home'
+      }
+
+      // ---- 更好用（切片 P15）要被檢查的決定：全部是純函式（同上：六個空格縮排、結尾的 } 也是六個空格）----
+
+      /**
+       * 首頁由上而下的按鍵代號。pendingCount：老闆是待複核張數、店長是自己送出還在等的張數（myPendingCount）。
+       * 老闆：待複核 → 利潤 → 庫存 → 銷貨、進貨、盤點、搬動 → 重新整理；剛好 0 張時最前面多一個 'none'（綠字「現在沒有單等你複核」）。
+       * 不是數字（舊後端、缺欄）不說「沒有單」。店長沒有利潤；pendingCount 大於 0 才多一顆 'waiting'（等老闆複核：N 張）。
+       */
+      function homeButtons(role, pendingCount) {
+        if (role === 'OWNER') {
+          var first = pendingCount === 0 ? ['none', 'review'] : ['review']
+          return first.concat(['profit', 'stock', 'sale', 'buy', 'count', 'move', 'reload'])
+        }
+        var waiting = typeof pendingCount === 'number' && pendingCount > 0 ? ['waiting'] : []
+        return waiting.concat(['sale', 'buy', 'count', 'move', 'stock', 'mine', 'reload'])
+      }
+
+      /**
+       * 這幾個代碼是「系統這邊的問題」，使用者能做的只有截圖給設定系統的人：回固定的白話（不採用後端的字、不查表）；其他回 null。
+       * messageFor 與 messageOf 都先呼叫它。
+       */
+      function plainSystemText(code) {
+        if (code === 'A1' || code === 'A6' || code === 'S1' || code === 'S2' || code === 'E1' || code === 'D4' || code === 'D8') {
+          return '系統這邊出了狀況，請把這個畫面截圖，傳給幫你設定系統的人（代碼 ' + code + '）。'
+        }
+        return null
+      }
+
+      /**
+       * 庫存頁每種茶底下的一行：這種茶現在放在哪幾格「A-01 1.2 台斤、B-02 半斤」。只列 qtyBase 大於 0 的格子；沒有 → 空字串。
+       * loose（散茶）照 unit（台斤／兩／公克）換算；計件商品一律用該格的 qtyText 原字，不管 unit。
+       */
+      function binsLine(code, byBin, unit, loose) {
+        var parts = []
+        ;(Array.isArray(byBin) ? byBin : []).forEach(function (b) {
+          if (!b || b.code !== code || typeof b.qtyBase !== 'number' || !(b.qtyBase > 0)) return
+          var q = loose ? Core.qtyInUnit(b.qtyBase, unit) : null
+          parts.push(b.binCode + ' ' + (q === null ? b.qtyText : q.text))
+        })
+        return parts.join('、')
+      }
+
+      /**
+       * 銷貨表單的商品鍵順序：[{ code, label }]。現在沒有任何可賣的格子（sellableOf(code) 是空的）→ 排到最後、label 加「（沒貨）」，
+       * 照樣可以按；有貨的保持原順序，沒貨的也保持原順序。
+       */
+      function saleProductOrder(products, sellableOf) {
+        var have = []
+        var none = []
+        ;(Array.isArray(products) ? products : []).forEach(function (p) {
+          var bins = sellableOf(p.code)
+          if (Array.isArray(bins) && bins.length > 0) have.push({ code: p.code, label: p.name })
+          else none.push({ code: p.code, label: p.name + '（沒貨）' })
+        })
+        return have.concat(none)
+      }
+
+      /** 利潤的「最近 n 個月」：[{ year, month }]，由本月往前。 */
+      function recentMonths(nowYear, nowMonth, n) {
+        var out = []
+        var y = nowYear
+        var m = nowMonth
+        for (var i = 0; i < n; i++) {
+          out.push({ year: y, month: m })
+          m--
+          if (m === 0) { m = 12; y-- }
+        }
+        return out
+      }
+
+      /** 某一個月的第一天與最後一天（'YYYY-MM-DD'）。整數算閏年，不用 Date 物件做月底計算。 */
+      function monthBounds(year, month) {
+        var leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0
+        var days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1]
+        var mm = month < 10 ? '0' + month : String(month)
+        return { startDate: year + '-' + mm + '-01', endDate: year + '-' + mm + '-' + days }
+      }
+
+      /** 'YYYY-MM-DD' → 「10/2」（去掉前導 0）。看不懂的字照原樣。 */
+      function mdText(iso) {
+        var s = String(iso === undefined || iso === null ? '' : iso)
+        var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s)
+        return m ? Number(m[2]) + '/' + Number(m[3]) : s
+      }
+
+      /** 重開時這一項要不要紅框紅字：原本就標了問題（ln.problem）而且現在的檢查（lineProblem）還是不過。 */
+      function showProblem(ln, problemNow) {
+        return !!ln && ln.problem === true && problemNow !== null
+      }
+
+      /** 現在還標著紅框的項數（「有 N 項帶不進來」的 N）。problemOf(ln, i) 回 lineProblem 的結果。 */
+      function problemCount(lines, problemOf) {
+        var n = 0
+        ;(Array.isArray(lines) ? lines : []).forEach(function (ln, i) { if (showProblem(ln, problemOf(ln, i))) n++ })
+        return n
       }
 
       /**
@@ -1557,7 +1678,7 @@ var Core = (() => {
           el('div', { cls: 'box' }, [
             el('p', { cls: 'bad', text: badRole
               ? '你已經在名單上，但「角色」那一欄沒有填對。'
-              : '這支手機還沒有被授權。' }),
+              : '請跟老闆說一聲，請他把你加進名單。' }),
             el('p', { text: '你的使用者編號是：' }),
             el('div', { cls: 'uid', text: userId }),
             copy[0],
@@ -1569,6 +1690,8 @@ var Core = (() => {
           el('p', { cls: 'muted', text: '填好之後按下面的按鈕。' }),
           reloadButton(),
         ])
+        // 不在名單上（A3）才給診斷資料；角色填錯（A5）是名單裡的事，不算
+        showDiag(!badRole)
       }
 
       /**
@@ -1650,8 +1773,9 @@ var Core = (() => {
       }
 
       /**
-       * 圖文選單與推播通知的 ?to=：sell → 銷貨表單、stock → 庫存頁、review（老闆）→ 待複核；其他一律首頁。
-       * 三者都用打開時那一次 stock 的回應（r），不再多叫一次。review 的清單是跟 stock 同時發出的（early）。
+       * 圖文選單與推播通知的 ?to=：sell → 銷貨表單、stock → 庫存頁、review（老闆）→ 待複核、review／mine（店長）→ 我送出的單、
+       * profit（老闆）→ 本月利潤、count → 盤點表單、buy → 進貨表單；其他一律首頁。
+       * 都用打開時那一次 stock 的回應（r），不再多叫一次。review 的清單是跟 stock 同時發出的（early）。
        */
       function landing(r, early, t) {
         var to = startTo
@@ -1659,6 +1783,9 @@ var Core = (() => {
         var page = startPage(to, r.role)
         if (page === 'sale') return startSale()
         if (page === 'stock') return showStock(r)
+        if (page === 'profit') return runProfit({ kind: 'thisMonth' })
+        if (page === 'count') return openCount()
+        if (page === 'buy') return openPurchase()
         // review（老闆）→ 待複核；mine（店長，退回通知的連結）→ 我送出的單。兩者都用同時發出的那一份清單
         if ((page === 'review' || page === 'mine') && early) {
           return early.then(function (lr) {
@@ -1676,14 +1803,6 @@ var Core = (() => {
         var owner = r.role === 'OWNER'
         var parts = [el('p', { cls: 'muted', text: '你好，' + r.name })]
 
-        // 老闆一打開就要看到有沒有單在等他（推播通知之外，打開首頁也看得到）
-        if (owner && r.pendingCount > 0) {
-          parts.push(el('div', { cls: 'box' }, [
-            el('p', { cls: 'num', text: '有 ' + r.pendingCount + ' 張單等你複核' }),
-            button('去複核', function () { openList() }, 'primary'),
-          ]))
-        }
-
         // 店長（切片 P10）：最近 7 天被退回的單（後端 stock 的 myRejected，最多 5 張）與等老闆複核的張數。
         // 欄位不在（舊後端、或單據缺欄）就不畫。原因是老闆打的字：一律 textContent
         if (!owner) {
@@ -1698,21 +1817,33 @@ var Core = (() => {
             })
             parts.push(el('div', { cls: 'box alert' }, kids))
           }
-          if (typeof r.myPendingCount === 'number' && r.myPendingCount > 0) {
-            parts.push(el('p', { cls: 'num', text: '等老闆複核：' + r.myPendingCount + ' 張' }))
-          }
         }
 
-        parts.push(button('銷貨', function () { openSale() }, 'wide'))
-        parts.push(button('進貨', function () { openPurchase() }, 'wide'))
-        parts.push(button('盤點', function () { openCount() }, 'wide'))
-        parts.push(button('搬動', function () { openMove() }, 'wide'))
-        parts.push(button('庫存', function () { openStock() }, 'wide'))
-        parts.push(button(owner ? '待複核' : '我送出的單', function () { openList() }, 'wide'))
-        // 成本與利潤只有老闆看得到（後端對店長回 P1）。店長的首頁根本沒有這顆鍵
-        if (owner) parts.push(button('利潤', function () { openProfit() }, 'wide'))
-        parts.push(el('div', { text: '' }))
-        parts.push(reloadButton())
+        // 按鍵與順序由 homeButtons 決定（切片 P15）：老闆「待複核 → 利潤 → 庫存 → 自己記一筆（銷貨、進貨、盤點、搬動）」。
+        // 成本與利潤只有老闆看得到（後端對店長回 P1）：店長的清單裡根本沒有 profit。
+        // 只有 stock 回應成功才會走到這裡，所以「現在沒有單」不會把「讀不到」說成「沒有單」
+        var pending = owner ? r.pendingCount : r.myPendingCount
+        homeButtons(r.role, pending).forEach(function (code) {
+          if (code === 'sale' && owner) parts.push(el('h2', { text: '自己記一筆' }))
+          if (code === 'none') parts.push(el('p', { cls: 'good', text: '現在沒有單等你複核' }))
+          if (code === 'review') {
+            parts.push(pending > 0
+              ? button('待複核（' + pending + ' 張）', function () { openList() }, 'wide primary')
+              : button('待複核', function () { openList() }, 'wide'))
+          }
+          if (code === 'waiting') parts.push(button('等老闆複核：' + pending + ' 張', function () { openList() }, 'wide'))
+          if (code === 'mine') parts.push(button('我送出的單', function () { openList() }, 'wide'))
+          if (code === 'profit') parts.push(button('利潤', function () { openProfit() }, 'wide'))
+          if (code === 'stock') parts.push(button('庫存', function () { openStock() }, 'wide'))
+          if (code === 'sale') parts.push(button('銷貨', function () { openSale() }, 'wide'))
+          if (code === 'buy') parts.push(button('進貨', function () { openPurchase() }, 'wide'))
+          if (code === 'count') parts.push(button('盤點', function () { openCount() }, 'wide'))
+          if (code === 'move') parts.push(button('搬動', function () { openMove() }, 'wide'))
+          if (code === 'reload') {
+            parts.push(el('div', { text: '' }))
+            parts.push(reloadButton())
+          }
+        })
         render(parts)
       }
 
@@ -1787,7 +1918,7 @@ var Core = (() => {
         clearTimeout(watchdog)
         session.stock = r
         var owner = r.role === 'OWNER'
-        var parts = [el('h2', { text: '庫存' })]
+        var parts = [el('h2', { text: '庫存' }), homeButton()]
 
         parts.push(el('label', { text: '散茶的數量用什麼單位看' }))
         parts.push(unitPicker(r))
@@ -1830,27 +1961,32 @@ var Core = (() => {
               lines.push(el('div', { cls: 'muted', text: '平均成本：每' + it.quoteUnit + ' ' + it.avgCostText + ' 元' }))
             }
           }
+          // 這種茶放在哪幾格（切片 P15）：不用再點開「每一格的明細」才知道去哪拿
+          var where = binsLine(it.code, r.byBin, unitNow(), loose)
+          if (where !== '') lines.push(el('div', { cls: 'muted', text: where }))
           parts.push(el('div', { cls: 'item' }, lines))
         })
 
-        parts.push(el('h2', { text: '每一格' }))
+        // 每一格的明細：預設收著（summary 高度由全域的 summary 規則給，至少 56px）
+        var detail = [el('summary', { text: '每一格的明細' })]
         if (r.byBin.length === 0) {
-          parts.push(el('p', { text: '還沒有任何一格有東西。' }))
+          detail.push(el('p', { text: '還沒有任何一格有東西。' }))
         }
         var lastBin = null
         r.byBin.forEach(function (b) {
           if (b.binCode !== lastBin) {
-            parts.push(el('div', { cls: 'bin', text: b.binCode }))
+            detail.push(el('div', { cls: 'bin', text: b.binCode }))
             lastBin = b.binCode
           }
           var product = productOf(b.code)
           var loose = product !== null && Core.isLooseTeaScale(product.stockUnitScale)
-          parts.push(el('div', { text: b.name + '　' + (loose ? looseText(b.qtyBase, '數量有問題', b.qtyText) : b.qtyText) }))
+          detail.push(el('div', { text: b.name + '　' + (loose ? looseText(b.qtyBase, '數量有問題', b.qtyText) : b.qtyText) }))
           // 這一格有被待複核銷貨佔住的量時，也講可以賣多少（跟「每一種茶」一樣跟著單位切換）
           if (loose && typeof b.qtyBase === 'number' && b.availableBase !== b.qtyBase) {
-            parts.push(el('div', { cls: 'muted', text: '其中可以賣的：' + looseText(b.availableBase, '現在沒有可以賣的', b.availableText) }))
+            detail.push(el('div', { cls: 'muted', text: '其中可以賣的：' + looseText(b.availableBase, '現在沒有可以賣的', b.availableText) }))
           }
         })
+        parts.push(el('details', { cls: 'bins' }, detail))
 
         parts.push(el('div', { text: '' }))
         parts.push(homeButton())
@@ -1930,6 +2066,7 @@ var Core = (() => {
         form.requestId = newRequestId()
         var go = document.querySelector('#app button.submit')
         if (go && !form.sending) go.textContent = submitLabel(form.kind, form.lines, { fenOf: fenOf })
+        refreshProblems(form)   // 重開的表單：改好的那一項紅框與紅字跟著消失（切片 P15）
       }
 
       // ---- 表單版面（切片 P13）：選好的收起來 ----
@@ -2059,14 +2196,14 @@ var Core = (() => {
       }
 
       /** 商品：選好就收成一行；還沒選、或按了〔換商品〕才列全部按鍵。 */
-      function productRow(box, ln, locked, onChange) {
+      function productRow(box, ln, locked, onChange, order) {
         var product = productOf(ln.code)
         if (product && !isPicking(form, ln.id + ':code')) {
           box.appendChild(chosenRow('商品', product.name, '換商品', function () { onChangeProduct(form, ln) }, locked))
           return
         }
         box.appendChild(el('label', { text: '商品' }))
-        box.appendChild(productPicker(ln, locked, onChange))
+        box.appendChild(productPicker(ln, locked, onChange, order))
       }
 
       /** 格子（按鍵＋打字框那一種）：用按鍵選好就收成一行；打字框打的格子不收。 */
@@ -2542,7 +2679,7 @@ var Core = (() => {
           ln.gift = false
           autoAmount(ln)
           renderSaleForm(true)   // 格子與單位那兩排跟著商品變
-        })
+        }, saleProductOrder(usableItems(), sellableBins))   // 沒貨的茶排最後（切片 P15），只有銷貨表單
 
         if (!product) {
           box.appendChild(el('label', { text: '從哪一格拿' }))
@@ -2884,10 +3021,14 @@ var Core = (() => {
       }
 
       /** 商品按鍵一排。選了別的商品 → onChange（重畫：格子與單位跟著商品變）；再點一次已經選的 → 只是收起來。 */
-      function productPicker(ln, locked, onChange) {
+      function productPicker(ln, locked, onChange, order) {
         var row = el('div', { cls: 'units' })
-        usableItems().forEach(function (it) {
-          var b = button(it.name, function () {
+        // order（銷貨表單才有，saleProductOrder）：[{ code, label }]；沒給就是全部商品、照原順序
+        var entries = order || usableItems().map(function (x) { return { code: x.code, label: x.name } })
+        entries.forEach(function (e) {
+          var it = productOf(e.code)
+          if (!it) return
+          var b = button(e.label, function () {
             // 再點一次已經選的，什麼都不變（單位也不要被洗回預設），只收成一行
             if (ln.code === it.code) return showLines(form, form.expanded, pickingWith(form, ln.id + ':code', false))
             ln.code = it.code
@@ -2938,12 +3079,57 @@ var Core = (() => {
        */
       function lineFrame(i) {
         var bad = form.badLine === i + 1
-        var flagged = bad || (form.lines[i] && form.lines[i].problem === true)
+        var ln = form.lines[i]
+        // 重開帶進來的紅框（切片 P15）：原本標了問題、而且現在的檢查還是不過才畫（改好了就不再紅）
+        var now = ln ? lineProblem(form.kind, ln, lineCtx(i)) : null
+        var flagged = bad || showProblem(ln, now)
         var box = el('div', { cls: flagged ? 'box alert' : 'box' }, [el('p', { cls: 'item-name', text: '第 ' + (i + 1) + ' 項' })])
         box.setAttribute('data-line', String(i + 1))
         if (bad && form.message) box.appendChild(el('p', { cls: 'bad', text: form.message }))
-        if (!bad && flagged) box.appendChild(el('p', { cls: 'bad', text: form.lines[i].note || '原本那張的這一項帶不進來，請重新選。' }))
+        if (!bad && flagged) box.appendChild(problemNote(ln, now))
         return box
+      }
+
+      /** 重開帶進來有問題的那一項的紅字：現在還不合格的那一句（帶不進來的沒有句子，用固定的）。data-note 讓就地更新找得到它。 */
+      function problemNote(ln, now) {
+        var p = el('p', { cls: 'bad', text: ln.note ? now : '原本那張的這一項帶不進來，請重新選。' })
+        p.setAttribute('data-note', '1')
+        return p
+      }
+
+      /** 重開的表單最上面那一句：有 N 項還標著紅框。 */
+      function problemText(n) {
+        return '有 ' + n + ' 項帶不進來或要重填（商品停賣或找不到、單位或格子不對、數量金額不合），已經框起來，請重新選或改。'
+      }
+
+      /** 每一項「現在」的檢查結果（lineProblem），給 problemCount 用。 */
+      function problemNowOf(f) {
+        return function (ln, i) { return lineProblem(f.kind, ln, lineCtx(i)) }
+      }
+
+      /**
+       * 重開的表單：店長在某一項打字之後（edited 之後呼叫），**就地**更新每一項的紅框與紅字、以及最上面的 N，不整頁重畫，
+       * 游標留在原本的輸入框。不是重開的表單沒有任何紅框，什麼都不做。按鍵（勾送的、換單位、換格子）會重畫，重畫時本來就重算。
+       */
+      function refreshProblems(f) {
+        if (!f || typeof f.reopenOf !== 'string') return
+        f.lines.forEach(function (ln, i) {
+          var box = document.querySelector('#app [data-line="' + (i + 1) + '"]')
+          if (!box) return
+          var bad = f.badLine === i + 1
+          if (bad) return   // 被後端或送出前的檢查擋下的那一項：紅框跟著那一句訊息，不在這裡動
+          var now = lineProblem(f.kind, ln, lineCtx(i))
+          var on = showProblem(ln, now)
+          box.className = on ? 'box alert' : 'box'
+          var old = box.querySelector('[data-note]')
+          if (old) box.removeChild(old)
+          if (on) box.insertBefore(problemNote(ln, now), box.children[1] || null)
+        })
+        var line = document.querySelector('#app [data-problem-count]')
+        if (!line) return
+        var n = problemCount(f.lines, problemNowOf(f))
+        line.textContent = n > 0 ? problemText(n) : ''
+        line.hidden = n === 0   // 0 項：那一句不顯示（改回去又不合格時再出現）
       }
 
       function deleteButton(i) {
@@ -3266,7 +3452,7 @@ var Core = (() => {
           draft.problems.forEach(function (n) { if (draft.lines[n - 1]) draft.lines[n - 1].problem = true })
           form = numberLines({
             kind: draft.kind, requestId: draft.requestId, lines: draft.lines, sending: false, message: '', badLine: 0, attempt: 0,
-            reopenOf: d.docNo, reopenReason: String(d.rejectReason || ''), problemCount: draft.problems.length,
+            reopenOf: d.docNo, reopenReason: String(d.rejectReason || ''),
             // 切片 P12：送出時帶給後端（submitBody）
             reopenedFrom: draft.reopenedFrom,
             // 自己撤回的（切片 P11）：重開的說明不寫「老闆退回的原因」
@@ -3290,9 +3476,12 @@ var Core = (() => {
         })
         // 切片 P12（R1）：重開的單在盤點眼裡算原本那張的時間 —— 拿它記一筆新的交易會讓帳變錯
         kids.push(el('p', { cls: 'muted', text: '照這張重開只用來改正同一件事；新的交易請開一張新單。' }))
-        if (form.problemCount > 0) {
-          kids.push(el('p', { cls: 'bad', text: '有 ' + form.problemCount + ' 項帶不進來（商品停賣或找不到、單位或格子不對），已經留空並框起來，請重新選。' }))
-        }
+        // 「有 N 項帶不進來…」：N 是 0 時不顯示（藏著，不是不存在：打字改回去又不合格時 refreshProblems 讓它出現）
+        var stuck = problemCount(form.lines, problemNowOf(form))
+        var count = el('p', { cls: 'bad', text: stuck > 0 ? problemText(stuck) : '' })
+        count.hidden = stuck === 0
+        count.setAttribute('data-problem-count', '1')
+        kids.push(count)
         return [el('div', { cls: 'box alert' }, kids)]
       }
 
@@ -3300,12 +3489,14 @@ var Core = (() => {
       function showReopenStop(r) {
         form = null
         showError(messageOf(r), [listButton(), homeButton()])
+        showDiag(false)   // 照這張重開被擋不算「出錯了」：不給診斷資料（切片 P15）
       }
 
       /** 防禦：重開的單被後端認成原本那張的重送（reopenClash）。**不顯示「送出了」**。 */
       function showReopenClash(docNo) {
         form = null
         showError('這張已經退回了，請重新按「照這張重開」。', [button('打開原本那張', function () { openDoc(docNo) }), homeButton()])
+        showDiag(false)   // 同上
       }
 
       // ---- 店長自己撤回（切片 P11）----
@@ -4009,9 +4200,20 @@ var Core = (() => {
           }
           runProfit({ kind: 'custom', startDate: a, endDate: b })
         }, 'primary')
+        // 最近 12 個月（以手機日期為準，只是畫面便利；期間照樣由後端 Core.periodRange 檢查）：按一下看那一個月
+        var nowDate = new Date()
+        var monthRow = el('div', { cls: 'units' })
+        recentMonths(nowDate.getFullYear(), nowDate.getMonth() + 1, 12).forEach(function (mo) {
+          var bounds = monthBounds(mo.year, mo.month)
+          monthRow.appendChild(button(mo.year + ' 年 ' + mo.month + ' 月', function () {
+            runProfit({ kind: 'custom', startDate: bounds.startDate, endDate: bounds.endDate })
+          }))
+        })
         render([
           el('h2', { text: '自訂期間' }),
-          el('label', { text: '起' }),
+          el('label', { text: '看哪一個月（最近 12 個月）' }),
+          monthRow,
+          el('label', { text: '或自己打日期：起' }),
           start,
           el('label', { text: '訖（這一天也算進去）' }),
           end,
@@ -4097,10 +4299,10 @@ var Core = (() => {
         var back = function () { return button('回利潤報表', function () { runProfit(ask) }) }
         r.docs.forEach(function (d) {
           var b = button('', function () { openDoc(d.docNo, back) }, 'wide')
-          b.appendChild(el('div', { cls: 'num', text: d.docNo }))
-          b.appendChild(el('div', { text: '通過 ' + d.reviewedDate + '　' + d.createdByName }))
-          b.appendChild(el('div', { text: '營收 ' + d.revenueText + ' 元　成本 ' + d.costText + ' 元' }))
-          b.appendChild(el('div', { text: '利潤 ' + d.profitText + ' 元' }))
+          // 第一行大字：哪一天、賺多少（切片 P15）；營收、成本、送單人放小字；單號最後
+          b.appendChild(el('div', { cls: 'num', text: mdText(d.reviewedDate) + '　利潤 ' + d.profitText + ' 元' }))
+          b.appendChild(el('div', { cls: 'muted small', text: '營收 ' + d.revenueText + ' 元　成本 ' + d.costText + ' 元　' + d.createdByName }))
+          b.appendChild(el('div', { cls: 'muted small', text: d.docNo }))
           parts.push(b)
         })
 
