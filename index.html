@@ -1302,6 +1302,43 @@ var Core = (() => {
         return body
       }
 
+      // ---- 內容沒變就不會變成新單（切片 P14 第一項）：一樣是純函式（test/request-id.test.js 抽出來執行）----
+      //
+      // 「送出不確定有沒有成功」之後，點一下已經選好的格子、單位、份量鍵……處理函式都會呼叫 edited() 換新的
+      // requestId；再按送出就變成新單，第一次其實已經存了的話就多一張一樣的待複核單。所以**送出用的 id 由內容決定**：
+      // 每張表單記著「送過的內容 → 那一次的 requestId」（form.sent，只在記憶體、只在這張表單打開期間），
+      // 送出前用 pickRequestId 挑 id。edited() 照舊換 form.requestId，但真正送出的一律經過這裡。
+
+      /**
+       * 送給後端的每一項欄位，照固定順序組成一個字串。格子（binCode、toBinCode）用 binKey 正規化：
+       * a-01、A-1、Ａ－０１ 都算同一格（後端也是這樣存）。沒有的欄位記成 null。
+       */
+      function submitSnapshot(kind, lines) {
+        var FIELDS = ['productCode', 'binCode', 'toBinCode', 'inputQty', 'inputUnit', 'amountFen', 'isGift']
+        var rows = (Array.isArray(lines) ? lines : []).map(function (l) {
+          return FIELDS.map(function (f) {
+            var v = l && Object.prototype.hasOwnProperty.call(l, f) && l[f] !== undefined ? l[f] : null
+            if ((f === 'binCode' || f === 'toBinCode') && v !== null) {
+              var key = binKey(v)
+              return key === null ? String(v) : key
+            }
+            return v
+          })
+        })
+        return JSON.stringify([String(kind), rows])
+      }
+
+      /**
+       * 這一次送出要用的 requestId：sent 裡已經有同樣的內容 → 回那一次的 id（同一張單，後端認得是重送）；
+       * 沒有 → 回 currentId，但 currentId 已經被別的內容用過時，改用 mint() 產生新的（內容不同不可以撞同一個 id）。
+       */
+      function pickRequestId(sent, snap, currentId, mint) {
+        var map = sent || {}
+        if (Object.prototype.hasOwnProperty.call(map, snap)) return map[snap]
+        var taken = Object.keys(map).some(function (k) { return map[k] === currentId })
+        return taken ? mint() : currentId
+      }
+
       // ---- 表單版面（切片 P13）要被檢查的決定：一樣是純函式（test/form-layout.test.js 抽出來執行）----
 
       /**
@@ -1834,6 +1871,9 @@ var Core = (() => {
        *
        * **改了任何一格就換一個新的**：不然改過內容的重送會被認成舊單，
        * 回來的是舊內容（成功畫面列的是後端實際存下的，他看得出來，但不該發生）。
+       *
+       * 切片 P14 起，真正送出用哪一個由 pickRequestId 依**內容**決定：同樣的內容沿用第一次送出時的 id
+       * （點了已經選好的鍵、改了又改回來，都不會變成新單）；內容不同才是新的 id。
        */
       function newRequestId() {
         var bytes = new Uint8Array(16)
@@ -1919,6 +1959,8 @@ var Core = (() => {
         f.expanded = expandedAfter({ type: 'open' }, { lines: f.lines.map(function (ln) { return { id: ln.id, problem: null } }), expanded: [] }).expanded
         f.picking = {}
         f.helpOpen = false
+        // 這張表單送過的內容 → 那一次的 requestId（切片 P14，見 pickRequestId）。四張表單與重開的表單都經過這裡
+        f.sent = {}
         return f
       }
 
@@ -2178,6 +2220,10 @@ var Core = (() => {
           return renderForm()
         }
         var mine = form
+        // 切片 P14：送出用的 requestId 由內容決定（同樣的內容沿用第一次送出時的 id）
+        var snap = submitSnapshot('PURCHASE', checked.lines)
+        mine.requestId = pickRequestId(mine.sent, snap, mine.requestId, newRequestId)
+        mine.sent[snap] = mine.requestId
         var ticket = begin()
         mine.sending = true
         mine.message = ''
@@ -2698,6 +2744,10 @@ var Core = (() => {
         }
         rememberSaleUnits(checked.lines)
         var mine = form
+        // 切片 P14：送出用的 requestId 由內容決定（同樣的內容沿用第一次送出時的 id）
+        var snap = submitSnapshot('SALE', checked.lines)
+        mine.requestId = pickRequestId(mine.sent, snap, mine.requestId, newRequestId)
+        mine.sent[snap] = mine.requestId
         var ticket = begin()
         mine.sending = true
         mine.message = ''
@@ -2947,6 +2997,10 @@ var Core = (() => {
           return rerender()
         }
         var mine = form
+        // 切片 P14：送出用的 requestId 由內容決定（同樣的內容沿用第一次送出時的 id）
+        var snap = submitSnapshot(kind, checked.lines)
+        mine.requestId = pickRequestId(mine.sent, snap, mine.requestId, newRequestId)
+        mine.sent[snap] = mine.requestId
         var ticket = begin()
         mine.sending = true
         mine.message = ''
