@@ -879,6 +879,8 @@ var Core = (() => {
       // （設計文件 §5.2）。所有防護都在後端的 token 驗證。
       var LIFF_ID = '2011787319-F5PDXDUn'
       var BACKEND_URL = 'https://script.google.com/macros/s/AKfycbxkqeQVGN4njMFKBdfqpyabeVYQ_jgncRt33sC00RcNPrsTMQf_6XSuUQbkwjAkI6V0Xg/exec'
+      // 這一頁是照哪一版後端發布的（切片 P16）：發布時換成那一次打包的版本碼（12 碼小寫十六進位）。不是機密
+      var EXPECTED_BUILD = '5c6257c4ccd5'
 
       // 任何「正在讀取」超過這麼久就給他一顆按鈕 —— 不可以是死路。
       // 第一次冒煙測試在實機上就遇過 liff.init() 永遠不 settle。
@@ -1323,6 +1325,32 @@ var Core = (() => {
         return '第 ' + n + ' 項庫存不夠扣（' + l.productName + (res.scope === 'bin' ? '，從 ' + l.binCode + ' 拿' : '') + '，' + where + how + '）。可以先通過比較早的進貨單，或退回請店長改。'
       }
 
+      // ---- 該修的二（切片 P16）要被檢查的決定：一樣是純函式（test/fix-two-ui.test.js 抽出來執行）----
+
+      /**
+       * 店長清單上這張退回單還要不要畫紅框：已經照著重開過的（後端 listDocs 的 reopened === true）就不用了。
+       * 只有布林 true 才算；舊後端沒有這個欄位 → 照舊紅框。超過 7 天、沒重開過的也照舊紅框。
+       */
+      function stillRejected(d) {
+        return !!d && d.reopened !== true
+      }
+
+      /** 單號的樣子（跟後端 DOC_NO 同一條、最長 24 字）。「看重開的那一張」只在後端給的單號長得對時才畫。 */
+      function looksLikeDocNo(s) {
+        return typeof s === 'string' && s.length <= 24 && /^(PU|SA|AJ|MV)-\d{6}-\d{3,}$/.test(s)
+      }
+
+      /** 畫面帶的版本碼跟後端回的不同：兩個都是 12 碼小寫十六進位**而且**不同才算（本機沒換掉標記、舊後端沒有 buildId → 不算）。 */
+      function buildMismatch(expected, got) {
+        var shape = /^[0-9a-f]{12}$/
+        return typeof expected === 'string' && typeof got === 'string' && shape.test(expected) && shape.test(got) && expected !== got
+      }
+
+      /** 老闆首頁最下面的「後端還不是最新版」：只有老闆看得到。 */
+      function showBuildWarning(role, expected, got) {
+        return role === 'OWNER' && buildMismatch(expected, got)
+      }
+
       // ---- 照這張重開（切片 P10）要被檢查的決定：一樣是純函式（test/ui-logic.test.js 抽出來執行）----
 
       /** 只有這四種單有「照這張重開」。**固定對照表、hasOwnProperty**：試算表來的 docType 是 constructor 之類也查不到原型上的東西。 */
@@ -1748,6 +1776,8 @@ var Core = (() => {
           : null
         call('stock').then(function (r) {
           if (!current(t)) return
+          // 診斷資料多一個 build（切片 P16）：畫面帶的版本碼與後端 stock 回的（沒有就 null）
+          if (r && r.ok) diag.build = { expected: EXPECTED_BUILD, backend: typeof r.buildId === 'string' ? r.buildId.slice(0, 40) : null }
           log({ step: 'stock', ok: r.ok, code: r.code, timing: r.timing })
           if (r.ok) {
             stockArrived(r)
@@ -1844,6 +1874,10 @@ var Core = (() => {
             parts.push(reloadButton())
           }
         })
+        // 線上的後端跟這一頁不是同一版（切片 P16）：只有老闆，最下面一行灰字
+        if (showBuildWarning(r.role, EXPECTED_BUILD, r.buildId)) {
+          parts.push(el('p', { cls: 'muted', text: '後端還不是最新版。請告訴開發者：可能還沒部署新版本。' }))
+        }
         render(parts)
       }
 
@@ -3637,15 +3671,18 @@ var Core = (() => {
           // 店長的退回單（切片 P10）：紅框、直接列出原因。最近退回的由後端排在最前面。
           // 自己撤回的（切片 P11，withdrawn）：寫「已撤回」，不畫紅框、不列原因
           var rejected = !owner && d.status === 'REJECTED' && d.withdrawn !== true
-          var b = button('', function () { openDoc(d.docNo) }, rejected ? 'wide rejected' : 'wide')
+          // 已經照這張重開過的（切片 P16）：狀態字與原因照寫、用一般顏色，不畫紅框
+          var red = rejected && stillRejected(d)
+          var b = button('', function () { openDoc(d.docNo) }, red ? 'wide rejected' : 'wide')
           // 第一行大字：類型與項數（銷貨、進貨加合計）；單號小字放最後
           b.appendChild(el('div', { cls: 'num', text: textOf(TYPE_TEXT, d.docType) + '　' + d.lineCount + ' 項' + (hasMoney(d.docType) ? '　合計 ' + d.totalText + ' 元' : '') }))
           b.appendChild(el('div', { text: d.createdByName + '　' + whenText(d.createdAt) }))
           // 老闆清單裡每一張都在等複核，不必每列都寫；店長要看得出哪一張被退回了
-          if (!owner || d.status !== 'PENDING') b.appendChild(el('div', { cls: rejected ? 'bad' : undefined, text: statusWord(d) }))
+          if (!owner || d.status !== 'PENDING') b.appendChild(el('div', { cls: red ? 'bad' : undefined, text: statusWord(d) }))
           if (rejected && typeof d.rejectReason === 'string' && d.rejectReason !== '') {
-            b.appendChild(el('div', { cls: 'bad', text: '原因：' + d.rejectReason }))
+            b.appendChild(el('div', { cls: red ? 'bad' : undefined, text: '原因：' + d.rejectReason }))
           }
+          if (rejected && d.reopened === true) b.appendChild(el('div', { cls: 'muted', text: '已經照這張重開了' }))
           b.appendChild(el('div', { cls: 'muted', text: d.docNo }))
           parts.push(b)
         })
@@ -3713,7 +3750,12 @@ var Core = (() => {
           // 只有四種單之一才有這顆鍵（canReopen：固定對照表）；而且後端說可以（reopenAllowed，切片 P12）
           if (!owner && canReopen(d.docType)) {
             if (reopenAllowed(d)) parts.push(button('照這張重開', function () { reopenDoc(r) }, 'primary'))
-            else parts.push(el('p', { cls: 'muted', text: '這張不能照著重開（超過 7 天，或已經照它重開過了）。要再送請開一張新的。' }))
+            else if (d.reopened === true) {
+              // 已經照這張重開過了（切片 P16）：不叫她「開一張新的」（那會多一張一樣的單）；後端給了子單的單號就給一顆鍵
+              parts.push(el('p', { cls: 'muted', text: '已經照這張重開了，不用再送。' }))
+              if (looksLikeDocNo(d.reopenedTo)) parts.push(button('看重開的那一張', function () { openDoc(d.reopenedTo) }, 'wide'))
+            }
+            else parts.push(el('p', { cls: 'muted', text: '這張退回超過 7 天，不能照著重開了。要再送請開一張新的。' }))
           }
         }
         var sale = d.docType === 'SALE'
