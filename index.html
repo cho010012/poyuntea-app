@@ -43,7 +43,7 @@
     .good { color: var(--ok); font-weight: bold; }
     .box { border: 2px solid var(--line); background: var(--card); padding: 12px; margin-bottom: 16px; }
     .num { font-size: var(--number-font-size); font-weight: bold; }
-    .big { font-size: 32px; }
+    .big { font-size: 32px; font-weight: bold; }
     .uid {
       font-family: ui-monospace, Menlo, Consolas, monospace;
       font-size: var(--number-font-size);
@@ -168,6 +168,7 @@ var Core = (() => {
     normalizeBinCode: () => normalizeBinCode,
     onBookQty: () => onBookQty,
     onBookQtyInBin: () => onBookQtyInBin,
+    pendingSaleCount: () => pendingSaleCount,
     periodRange: () => periodRange,
     profitReport: () => profitReport,
     qtyInUnit: () => qtyInUnit,
@@ -176,6 +177,7 @@ var Core = (() => {
     stockSummary: () => stockSummary,
     stockValue: () => stockValue,
     taipeiDateOf: () => taipeiDateOf,
+    taipeiYyyymmOf: () => taipeiYyyymmOf,
     toBaseQty: () => toBaseQty,
     unitPriceFenFromAmount: () => unitPriceFenFromAmount,
     validateCountLine: () => validateCountLine,
@@ -722,6 +724,13 @@ var Core = (() => {
     if (!Number.isFinite(ms)) return "";
     return dateText(ms + TAIPEI_OFFSET_MS);
   }
+  function taipeiYyyymmOf(date) {
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+      throw new Error("日期不正確，無法產生單號");
+    }
+    const t = new Date(date.getTime() + TAIPEI_OFFSET_MS);
+    return String(t.getUTCFullYear()) + String(t.getUTCMonth() + 1).padStart(2, "0");
+  }
 
   // src/core/report.js
   var STAMP2 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
@@ -751,6 +760,12 @@ var Core = (() => {
     const whole = Math.floor(abs / 10);
     const frac = abs % 10;
     return (permille < 0 ? "-" : "") + whole + (frac === 0 ? "" : "." + frac) + "%";
+  }
+  function pendingSaleCount(docs, fromMs, toMs, nowMs) {
+    if (!(fromMs <= nowMs && nowMs < toMs)) return null;
+    let n = 0;
+    for (const d of docs) if (d.docType === "SALE" && d.status === "PENDING") n++;
+    return n;
   }
   function profitReport({ docs, lines, outflows, products, names, from, to, maxDocs }) {
     const fromMs = Date.parse(from);
@@ -881,7 +896,7 @@ var Core = (() => {
       var LIFF_ID = '2011787319-F5PDXDUn'
       var BACKEND_URL = 'https://script.google.com/macros/s/AKfycbxkqeQVGN4njMFKBdfqpyabeVYQ_jgncRt33sC00RcNPrsTMQf_6XSuUQbkwjAkI6V0Xg/exec'
       // 這一頁是照哪一版後端發布的（切片 P16）：發布時換成那一次打包的版本碼（12 碼小寫十六進位）。不是機密
-      var EXPECTED_BUILD = '5c6257c4ccd5'
+      var EXPECTED_BUILD = '5ed67d3b0d07'
 
       // 任何「正在讀取」超過這麼久就給他一顆按鈕 —— 不可以是死路。
       // 第一次冒煙測試在實機上就遇過 liff.init() 永遠不 settle。
@@ -994,8 +1009,17 @@ var Core = (() => {
         location.replace(url)
       }
 
+      /**
+       * 回首頁。表單填到一半（formHasInput）先問一次「要放棄剛才填的嗎？」（切片 P20）。
+       * **送出中照舊直接回首頁、不問**：確認畫面會讓送出的回應與看門狗都被丟掉（stillMine 變假），
+       * 「繼續填」回來就永遠卡在「送出中…」。
+       */
       function homeButton(text) {
-        return button(text || '回首頁', function () { goHome() })
+        return button(text || '回首頁', function () {
+          if (form !== null && form.sending === true) return goHome()
+          if (formHasInput(form)) return showLeaveConfirm()
+          goHome()
+        })
       }
 
       /** 讀取中的畫面沒有按鈕，所以**一定要有看門狗**：卡住的話 15 秒後換成錯誤畫面。 */
@@ -1521,6 +1545,140 @@ var Core = (() => {
         return taken ? mint() : currentId
       }
 
+      // ---- 更好用三（切片 P20）要被檢查的決定：一樣是純函式（test/better-use-3.test.js 抽出來執行）----
+
+      /**
+       * 盤點、搬動、進貨選了茶之後的單位：手機記得的那一個（remembered）在這個商品的單位裡 → 它；
+       * 這個商品只有一種單位 → 那一種；其他 → ''（**不預設**台斤：打「5」想的是 5 兩、忘了點單位，就差 16 倍。要她自己點一次，之後就記住）。
+       */
+      function unitAfterPick(units, remembered) {
+        var list = Array.isArray(units) ? units : []
+        if (typeof remembered === 'string' && list.indexOf(remembered) !== -1) return remembered
+        return list.length === 1 ? list[0] : ''
+      }
+
+      /** 利潤頁大字下面那一行：回應的 pendingSaleCount 是大於 0 的數字才有；null、0、沒有這一欄、不是數字（'3'）→ ''。 */
+      function pendingLine(r) {
+        var n = r ? r.pendingSaleCount : null
+        return typeof n === 'number' && n > 0 ? '還有 ' + n + ' 張銷貨單等你複核，通過之後才會算進來。' : ''
+      }
+
+      /** 這張表單有沒有填任何東西：任何一項的商品、數量、金額或格子（含搬到哪一格）不是空的。沒有表單（null）→ false。 */
+      function formHasInput(f) {
+        if (f === null || typeof f !== 'object' || !Array.isArray(f.lines)) return false
+        var filled = function (v) { return typeof v === 'string' && v.trim() !== '' }
+        return f.lines.some(function (ln) {
+          return !!ln && (filled(ln.code) || filled(ln.qty) || filled(ln.amount) || filled(ln.bin) || filled(ln.to))
+        })
+      }
+
+      /** 雜湊的位元組 → 小寫十六進位。 */
+      function hexOf(buf) {
+        var bytes = new Uint8Array(buf)
+        var s = ''
+        for (var i = 0; i < bytes.length; i++) s += (bytes[i] < 16 ? '0' : '') + bytes[i].toString(16)
+        return s
+      }
+
+      /**
+       * 登入過期時要留的那一份（還沒加 savedAt、role）：{ v: 1, kind, requestId, snap, userHash, lines }。
+       * 每一項照種類用**具名欄位**建一個新物件（跟 reopenDraft 同樣的欄位），不複製任何別的鍵；touched 一定要留
+       * （沒有它，手打的銷貨金額在改數量時會被建議價蓋掉）。snap 是送出那一次的 submitSnapshot（form.sent 裡對到現在 requestId 的那一個），
+       * 還原時用來接回「內容一樣就用同一個 requestId」。重開的表單（可以從那張單再重開一次）、沒有 userHash、找不到 snap → null。
+       */
+      function draftOf(f, userHash) {
+        var KINDS = { PURCHASE: true, SALE: true, ADJUST: true, MOVE: true }
+        if (!f || typeof f.kind !== 'string' || !Object.prototype.hasOwnProperty.call(KINDS, f.kind)) return null
+        if (f.reopenedFrom !== undefined || f.reopenOf !== undefined) return null
+        if (typeof userHash !== 'string' || userHash === '') return null
+        var sent = f.sent || {}
+        var snap = null
+        Object.keys(sent).forEach(function (k) { if (sent[k] === f.requestId) snap = k })
+        if (snap === null) return null
+        var kind = f.kind
+        var s = function (v) { return typeof v === 'string' ? v : '' }
+        var lines = (Array.isArray(f.lines) ? f.lines : []).map(function (ln) {
+          if (kind === 'PURCHASE') return { code: s(ln.code), bin: s(ln.bin), qty: s(ln.qty), unit: s(ln.unit), amount: s(ln.amount) }
+          if (kind === 'SALE') {
+            return { code: s(ln.code), bin: s(ln.bin), qty: s(ln.qty), unit: s(ln.unit), carry: s(ln.carry), amount: s(ln.amount),
+              touched: ln.touched === true, gift: ln.gift === true, picked: ln.picked === true, shortcut: typeof ln.shortcut === 'string' ? ln.shortcut : null }
+          }
+          if (kind === 'ADJUST') return { code: s(ln.code), bin: s(ln.bin), qty: s(ln.qty), unit: s(ln.unit) }
+          return { code: s(ln.code), bin: s(ln.bin), to: s(ln.to), qty: s(ln.qty), unit: s(ln.unit) }
+        })
+        return { v: 1, kind: kind, requestId: f.requestId, snap: snap, userHash: userHash, lines: lines }
+      }
+
+      /**
+       * 重新登入之後，sessionStorage 裡那一份（raw 字串）還能不能接著填：逐條檢查，**任何一條不合 → null**（呼叫的人刪掉、不提）。
+       * 版本 1；存了 30 分鐘以內；角色跟這次的一樣；userHash 跟這次算出來的一樣（同一個角色的另一個人拿不到）；kind 查固定對照表
+       * （hasOwnProperty）；requestId 是 newRequestId 的樣子；snap 是字串；1 到 MAX_LINES 項。每一項照種類用具名欄位重新建立：
+       * 字串欄最長 100 字、布林欄一定是布林、shortcut 是 null 或 SALE_SHORTCUTS 之一。現在商品清單裡沒有的那一項丟掉（全部丟光 → null）；
+       * 單位不在那個商品這種單的單位裡 → 清成 ''（讓她重點；銷貨的快捷鍵一起清掉）。
+       * 合格 → { kind, requestId（原本的）, sent: { [snap]: requestId }, lines }：之後改了又改回來，pickRequestId 仍拿回原本那個 id。
+       */
+      function restoreDraft(raw, nowMs, role, userHash, productOf) {
+        var d
+        try { d = JSON.parse(raw) } catch (e) { return null }
+        if (d === null || typeof d !== 'object' || Array.isArray(d)) return null
+        var KINDS = { PURCHASE: true, SALE: true, ADJUST: true, MOVE: true }
+        var ROLES = { OWNER: true, MANAGER: true }
+        var own = function (o, k) { return Object.prototype.hasOwnProperty.call(o, k) }
+        if (d.v !== 1) return null
+        if (typeof d.savedAt !== 'number' || !(nowMs >= d.savedAt) || nowMs - d.savedAt > 30 * 60 * 1000) return null
+        if (typeof role !== 'string' || !own(ROLES, role) || d.role !== role) return null
+        if (typeof userHash !== 'string' || userHash === '' || d.userHash !== userHash) return null
+        if (typeof d.kind !== 'string' || !own(KINDS, d.kind)) return null
+        if (typeof d.requestId !== 'string' || !/^[A-Za-z0-9_-]{22}$/.test(d.requestId)) return null
+        if (typeof d.snap !== 'string' || d.snap.charAt(0) !== '[') return null
+        if (!Array.isArray(d.lines) || d.lines.length === 0 || d.lines.length > MAX_LINES) return null
+        var kind = d.kind
+        var BAD = {}
+        var str = function (o, k) {
+          var v = own(o, k) ? o[k] : null
+          if (typeof v !== 'string' || v.length > 100) throw BAD
+          return v
+        }
+        var bool = function (o, k) {
+          var v = own(o, k) ? o[k] : null
+          if (v !== true && v !== false) throw BAD
+          return v
+        }
+        var lines = []
+        try {
+          d.lines.forEach(function (o) {
+            if (o === null || typeof o !== 'object' || Array.isArray(o)) throw BAD
+            var ln
+            if (kind === 'PURCHASE') {
+              ln = { code: str(o, 'code'), bin: str(o, 'bin'), qty: str(o, 'qty'), unit: str(o, 'unit'), amount: str(o, 'amount') }
+            } else if (kind === 'SALE') {
+              var sc = own(o, 'shortcut') ? o.shortcut : undefined
+              if (sc !== null && SALE_SHORTCUTS.indexOf(sc) === -1) throw BAD
+              ln = { code: str(o, 'code'), bin: str(o, 'bin'), qty: str(o, 'qty'), unit: str(o, 'unit'), carry: str(o, 'carry'), amount: str(o, 'amount'),
+                touched: bool(o, 'touched'), gift: bool(o, 'gift'), picked: bool(o, 'picked'), shortcut: sc }
+            } else if (kind === 'ADJUST') {
+              ln = { code: str(o, 'code'), bin: str(o, 'bin'), qty: str(o, 'qty'), unit: str(o, 'unit') }
+            } else {
+              ln = { code: str(o, 'code'), bin: str(o, 'bin'), to: str(o, 'to'), qty: str(o, 'qty'), unit: str(o, 'unit') }
+            }
+            var item = productOf(ln.code)
+            if (!item) return
+            var units = kind === 'SALE' ? item.saleUnits : item.purchaseUnits
+            if (!Array.isArray(units) || units.indexOf(ln.unit) === -1) {
+              ln.unit = ''
+              if (kind === 'SALE') ln.shortcut = null
+            }
+            lines.push(ln)
+          })
+        } catch (e) {
+          return null
+        }
+        if (lines.length === 0) return null
+        var sent = {}
+        sent[d.snap] = d.requestId
+        return { kind: kind, requestId: d.requestId, sent: sent, lines: lines }
+      }
+
       // ---- 表單版面（切片 P13）要被檢查的決定：一樣是純函式（test/form-layout.test.js 抽出來執行）----
 
       /**
@@ -1537,6 +1695,8 @@ var Core = (() => {
         var q
         if (kind === 'PURCHASE') {
           if (ctx.halfWidth(ln.bin) === '') return n + '請選放在哪一格，或打一個格子，例如 A-01。'
+          // 選茶不再預設台斤（切片 P20）：沒點單位就擋下（跟盤點、搬動同一句）
+          if ((product.purchaseUnits || []).indexOf(ln.unit) === -1) return n + '請選單位。'
           q = ctx.halfWidth(ln.qty)
           if (!ctx.decimal2(q) || !(Number(q) > 0)) return n + '數量要填大於零的數字，最多到小數兩位。'
           if (ctx.fenOf(ln.amount) === null) return n + '請填這一項花了多少錢（元），最多到小數兩位；沒花錢就填 0。'
@@ -1779,8 +1939,9 @@ var Core = (() => {
       // ---- 首頁：查庫存 ----
 
       // 最近一次查庫存的結果。進貨表單的商品清單就從這裡來
-      // stockAt：這份庫存是什麼時候拿到的（Date.now()）。銷貨、盤點、搬動表單 60 秒內直接用，不再叫一次
-      var session = { stock: null, stockAt: null }
+      // stockAt：這份庫存是什麼時候拿到的（Date.now()）。銷貨、盤點、搬動表單、庫存頁 60 秒內直接用，不再叫一次
+      // userHash（切片 P20）：這個 LINE 使用者代號的 SHA-256（十六進位，rememberUser）。草稿只存它，不存使用者編號本身
+      var session = { stock: null, stockAt: null, userHash: null }
 
       /** 剛從後端拿到一份庫存。 */
       function stockArrived(r) {
@@ -1801,6 +1962,7 @@ var Core = (() => {
       function goHome() {
         var t = begin()
         form = null
+        lastProfit = null   // 剛才那一份利潤報表（切片 P20）只留到回首頁為止
         showLoading()
         // ?to=review、?to=mine（切片 P10）：stock 與 listDocs 同時發出，省一次來回。listDocs 失敗（或角色不對）
         // 就當成沒有：只有 stock 的回應走 handledAuth（A2 只觸發一次重新打開）
@@ -1818,7 +1980,7 @@ var Core = (() => {
           }
           if (handledAuth(r)) return
           return showError(messageFor(r.code), [button('再試一次', goHome, 'primary'), reloadButton()])
-        }).catch(netFailed(t, '連不到店裡的系統。請確認網路之後按「重新整理」。', [button('再試一次', goHome, 'primary'), reloadButton()]))
+        }).catch(netFailed(t, '連不到店裡的系統。請確認網路之後按「再試一次」。', [button('再試一次', goHome, 'primary'), reloadButton()]))
       }
 
       // ---- 打開時的第一個畫面（切片 P8：推播通知的連結 ?to=review）----
@@ -1843,28 +2005,48 @@ var Core = (() => {
       function landing(r, early, t) {
         var to = startTo
         startTo = null
-        var page = startPage(to, r.role)
-        if (page === 'sale') return startSale()
-        if (page === 'stock') return showStock(r)
-        if (page === 'profit') return runProfit({ kind: 'thisMonth' })
-        if (page === 'count') return openCount()
-        if (page === 'buy') return openPurchase()
-        // review（老闆）→ 待複核；mine（店長，退回通知的連結）→ 我送出的單。兩者都用同時發出的那一份清單
-        if ((page === 'review' || page === 'mine') && early) {
-          return early.then(function (lr) {
+        var hashed = rememberUser()
+        // 填到一半的草稿（切片 P20，登入過期時 saveDraft 留的）：有的話**先**顯示首頁和那個框，不自動跳去 ?to= 的頁面。
+        // 檢查要等這次的使用者代號雜湊算完；任何一條不合 → 刪掉、不提，照原本的路走
+        var raw = readDraft()
+        if (raw !== null) {
+          return hashed.then(function (h) {
             if (!current(t)) return
-            if (lr && lr.ok) return showList(lr)
-            showHome(r)   // 清單拿失敗：照一般方式顯示首頁（老闆有待複核張數與「去複核」；店長有退回的紅框）
+            var d = restoreDraft(raw, Date.now(), r.role, h, productOf)
+            log({ step: d !== null ? 'draft-found' : 'draft-dropped', lines: d !== null ? d.lines.length : 0 })
+            if (d !== null) return showHome(r, d)
+            dropDraft()
+            return route()
           })
         }
-        return showHome(r)
+        return route()
+
+        function route() {
+          var page = startPage(to, r.role)
+          if (page === 'sale') return startSale()
+          if (page === 'stock') return showStock(r)
+          if (page === 'profit') return runProfit({ kind: 'thisMonth' })
+          if (page === 'count') return openCount()
+          if (page === 'buy') return openPurchase()
+          // review（老闆）→ 待複核；mine（店長，退回通知的連結）→ 我送出的單。兩者都用同時發出的那一份清單
+          if ((page === 'review' || page === 'mine') && early) {
+            return early.then(function (lr) {
+              if (!current(t)) return
+              if (lr && lr.ok) return showList(lr)
+              showHome(r)   // 清單拿失敗：照一般方式顯示首頁（老闆有待複核張數與「去複核」；店長有退回的紅框）
+            })
+          }
+          return showHome(r)
+        }
       }
 
-      function showHome(r) {
+      /** draft（切片 P20）：restoreDraft 檢查過的草稿；有的話首頁最上面一個框「接著填」「不要了」。 */
+      function showHome(r, draft) {
         clearTimeout(watchdog)
         session.stock = r
         var owner = r.role === 'OWNER'
         var parts = [el('p', { cls: 'muted', text: '你好，' + r.name })]
+        if (draft) parts.unshift(draftBox(r, draft))
 
         // 店長（切片 P10）：最近 7 天被退回的單（後端 stock 的 myRejected，最多 5 張）與等老闆複核的張數。
         // 欄位不在（舊後端、或單據缺欄）就不畫。原因是老闆打的字：一律 textContent
@@ -1904,7 +2086,9 @@ var Core = (() => {
           if (code === 'move') parts.push(button('搬動', function () { openMove() }, 'wide'))
           if (code === 'reload') {
             parts.push(el('div', { text: '' }))
-            parts.push(reloadButton())
+            // 只重讀資料、留在首頁（切片 P20）：不整個重新走 LINE 連結（那會帶回最初網址的 ?to=、又跳去表單）。
+            // 真的壞掉時的整頁重載仍在各錯誤畫面上（reloadButton）
+            parts.push(button('重新整理', function () { goHome() }))
           }
         })
         // 線上的後端跟這一頁不是同一版（切片 P16）：只有老闆，最下面一行灰字
@@ -1915,11 +2099,13 @@ var Core = (() => {
       }
 
       /**
-       * 庫存清單。**每次打開都重新向後端要**，不用首頁那一份：老闆剛按完「通過」
-       * 回來看，數字要是新的。
+       * 庫存清單。60 秒內拿過、**而且之後沒有任何改庫存的動作**，才沿用那一份（切片 P20：首頁剛讀過就不再等一次）。
+       * 送單、撤回、通過、退回、補完都會把 session.stockAt 清掉，結果不確定（逾時、連線斷了）時也清，所以老闆剛按完
+       * 「通過」回來看，數字一定是新的。force：庫存頁底下的「重新整理」、錯誤畫面的「再試一次」，一律重讀。
        */
-      function openStock() {
+      function openStock(force) {
         var t = begin()
+        if (!force && stockIsFresh(session.stockAt, Date.now())) return showStock(session.stock)
         showLoading()
         call('stock').then(function (r) {
           if (!current(t)) return
@@ -1929,8 +2115,8 @@ var Core = (() => {
             return showStock(r)
           }
           if (handledAuth(r)) return
-          return showError(messageFor(r.code), [button('再試一次', function () { openStock() }), homeButton()])
-        }).catch(netFailed(t, '連不到店裡的系統。請確認網路之後再試一次。', [button('再試一次', function () { openStock() }), homeButton()]))
+          return showError(messageFor(r.code), [button('再試一次', function () { openStock(true) }), homeButton()])
+        }).catch(netFailed(t, '連不到店裡的系統。請確認網路之後再試一次。', [button('再試一次', function () { openStock(true) }), homeButton()]))
       }
 
       // ---- 庫存的顯示單位（利潤報表計畫 B）----
@@ -2060,7 +2246,7 @@ var Core = (() => {
         parts.push(button('盤點', function () { openCount() }, 'full'))
         parts.push(button('搬動', function () { openMove() }, 'full'))
         parts.push(homeButton())
-        parts.push(button('重新整理', function () { openStock() }))
+        parts.push(button('重新整理', function () { openStock(true) }))   // 一定重讀（切片 P20）
         render(parts, keepScroll)
       }
 
@@ -2311,8 +2497,8 @@ var Core = (() => {
         var box = lineFrame(i)
 
         productRow(box, ln, locked, function (it) {
-          var units = it.purchaseUnits
-          ln.unit = units.indexOf('台斤') !== -1 ? '台斤' : (units[0] || '')
+          // 不偷偷預設台斤（切片 P20）：記得的單位、或只有一種單位才先選好
+          ln.unit = unitAfterPick(it.purchaseUnits, rememberedLineUnit(it.code))
           var here = choicesFor(it.code).here
           ln.bin = here.length === 1 ? here[0] : ''   // 只在一格就自動選好
           renderForm(true)   // 單位那一排跟著商品變
@@ -2480,6 +2666,7 @@ var Core = (() => {
 
         armWatchdog(function () {
           if (!stillMine()) return
+          session.stockAt = null   // 結果不確定（切片 P20）：下一次看庫存、開表單都重新拿
           backToForm('等太久了，不確定有沒有送出。請直接再按一次「送出」——系統認得同一張單，不會重複。')
         })
 
@@ -2489,7 +2676,9 @@ var Core = (() => {
           clearTimeout(watchdog)
           log({ step: 'submitted', ok: r.ok, code: r.code })
           if (r.ok && reopenClash(r, mine.reopenOf)) return showReopenClash(mine.reopenOf)
-          if (r.ok) return showSubmitted(r)
+          if (r.ok) { rememberLineUnits(checked.lines); return showSubmitted(r) }
+          // 登入過期：重新登入會整頁換掉，先把這張留一份（切片 P20；saveDraft 同步、不丟例外，handledAuth 一定接著跑）
+          if (r.code === 'A2') saveDraft(form)
           if (handledAuth(r)) return
           if (reopenStop(r.code)) return showReopenStop(r)
           // B5：後端說第幾項有問題 → 框出那一項（訊息裡的「第 N 行」統一講「第 N 項」）
@@ -2498,7 +2687,8 @@ var Core = (() => {
           if (!stillMine()) return
           clearTimeout(watchdog)
           log({ step: 'error', code: err && err.code, message: err && err.message })
-          if (err && err.code === 'NO_TOKEN') return reloadOnce()
+          if (err && err.code === 'NO_TOKEN') { saveDraft(form); return reloadOnce() }
+          session.stockAt = null   // 結果不確定（切片 P20）
           backToForm('送出的時候連線斷了，不確定有沒有送出。請確認網路之後，直接再按一次「送出」——系統認得同一張單，不會重複。')
         })
       }
@@ -2604,6 +2794,7 @@ var Core = (() => {
       function showSubmitted(r) {
         form = null
         session.stockAt = null   // 剛送了單：可賣量變了，下一張表單要重新拿庫存
+        dropDraft()   // 任何一張送出成功都刪草稿（切片 P20）：不理那個框、自己重打一張送出之後，不會再「接著填」送出第二張
         var type = r.docType
         var parts = [
           el('div', { cls: 'box' }, [
@@ -2679,6 +2870,44 @@ var Core = (() => {
             if (l.productCode !== '__proto__' && Core.SALE_UNITS.indexOf(l.inputUnit) !== -1) m[l.productCode] = l.inputUnit
           })
           localStorage.setItem(SALE_UNIT_KEY, JSON.stringify(m))
+        } catch (e) {}
+      }
+
+      // ---- 手機上記住「每種茶上次用的進貨／盤點／搬動單位」（切片 P20）----
+      //
+      // 跟上面銷貨那一份分開、同一套寫法：{ 商品代號: 單位 }，沒有單據、數量、金額。選茶時不再預設台斤，
+      // 改用這裡記得的（unitAfterPick）；讀回來的單位**一定要在那個商品的 purchaseUnits 裡**才用（這支手機上任何人都改得到那一格）。
+      // 讀寫失敗（私密瀏覽）就當沒記住：她自己點一次單位。
+
+      var LINE_UNIT_KEY = 'poyuntea-line-units'
+
+      function readLineUnits() {
+        try {
+          var m = JSON.parse(localStorage.getItem(LINE_UNIT_KEY) || '{}')
+          return m !== null && typeof m === 'object' && !Array.isArray(m) ? m : {}
+        } catch (e) {
+          return {}
+        }
+      }
+
+      /** 這個商品記得的單位（還沒對白名單；unitAfterPick 會對那個商品的 purchaseUnits）。 */
+      function rememberedLineUnit(code) {
+        return pickRemembered(readLineUnits(), code)
+      }
+
+      /** 送出**成功**之後（進貨、盤點、搬動）：這張單每一項的「商品 → 單位」記起來。只記這個商品真的有的單位；最多留 200 筆舊的。 */
+      function rememberLineUnits(lines) {
+        try {
+          var old = readLineUnits()
+          var m = {}
+          Object.keys(old).slice(0, 200).forEach(function (k) {
+            if (k !== '__proto__' && typeof old[k] === 'string' && old[k].length <= 20) m[k] = old[k]
+          })
+          lines.forEach(function (l) {
+            var p = productOf(l.productCode)
+            if (l.productCode !== '__proto__' && p && (p.purchaseUnits || []).indexOf(l.inputUnit) !== -1) m[l.productCode] = l.inputUnit
+          })
+          localStorage.setItem(LINE_UNIT_KEY, JSON.stringify(m))
         } catch (e) {}
       }
 
@@ -3003,6 +3232,7 @@ var Core = (() => {
 
         armWatchdog(function () {
           if (!stillMine()) return
+          session.stockAt = null   // 結果不確定（切片 P20）：下一次看庫存、開表單都重新拿
           backToForm('等太久了，不確定有沒有送出。請直接再按一次「送出」——系統認得同一張單，不會重複。')
         })
 
@@ -3013,6 +3243,8 @@ var Core = (() => {
           log({ step: 'sale-submitted', ok: r.ok, code: r.code })
           if (r.ok && reopenClash(r, mine.reopenOf)) return showReopenClash(mine.reopenOf)
           if (r.ok) return showSubmitted(r)
+          // 登入過期：重新登入會整頁換掉，先把這張留一份（切片 P20；saveDraft 同步、不丟例外，handledAuth 一定接著跑）
+          if (r.code === 'A2') saveDraft(form)
           if (handledAuth(r)) return
           if (reopenStop(r.code)) return showReopenStop(r)
           if (r.code === 'D6') return backToForm(notEnoughText(r, mine), r.line)
@@ -3021,7 +3253,8 @@ var Core = (() => {
           if (!stillMine()) return
           clearTimeout(watchdog)
           log({ step: 'error', code: err && err.code, message: err && err.message })
-          if (err && err.code === 'NO_TOKEN') return reloadOnce()
+          if (err && err.code === 'NO_TOKEN') { saveDraft(form); return reloadOnce() }
+          session.stockAt = null   // 結果不確定（切片 P20）
           backToForm('送出的時候連線斷了，不確定有沒有送出。請確認網路之後，直接再按一次「送出」——系統認得同一張單，不會重複。')
         })
       }
@@ -3133,8 +3366,8 @@ var Core = (() => {
             if (ln.code === it.code) return showLines(form, form.expanded, pickingWith(form, ln.id + ':code', false))
             ln.code = it.code
             ln.problem = false
-            var units = it.purchaseUnits || []
-            ln.unit = units.indexOf('台斤') !== -1 ? '台斤' : (units[0] || '')
+            // 不偷偷預設台斤（切片 P20）：記得的單位、或只有一種單位才先選好；銷貨的 onChange 會再換成銷貨自己的
+            ln.unit = unitAfterPick(it.purchaseUnits, rememberedLineUnit(it.code))
             form.picking = pickingClearedFor(form, ln.id)   // 商品選好了收成一行；換了商品，格子也重選
             onChange(it)
             edited()
@@ -3317,6 +3550,7 @@ var Core = (() => {
 
         armWatchdog(function () {
           if (!stillMine()) return
+          session.stockAt = null   // 結果不確定（切片 P20）：下一次看庫存、開表單都重新拿
           backToForm('等太久了，不確定有沒有送出。請直接再按一次「送出」——系統認得同一張單，不會重複。')
         })
 
@@ -3326,7 +3560,9 @@ var Core = (() => {
           clearTimeout(watchdog)
           log({ step: action + '-done', ok: r.ok, code: r.code })
           if (r.ok && reopenClash(r, mine.reopenOf)) return showReopenClash(mine.reopenOf)
-          if (r.ok) return showSubmitted(r)
+          if (r.ok) { rememberLineUnits(checked.lines); return showSubmitted(r) }
+          // 登入過期：重新登入會整頁換掉，先把這張留一份（切片 P20；saveDraft 同步、不丟例外，handledAuth 一定接著跑）
+          if (r.code === 'A2') saveDraft(form)
           if (handledAuth(r)) return
           if (reopenStop(r.code)) return showReopenStop(r)
           if (r.code === 'D6' && d6Text) return backToForm(d6Text(r, mine), r.line)
@@ -3335,7 +3571,8 @@ var Core = (() => {
           if (!stillMine()) return
           clearTimeout(watchdog)
           log({ step: 'error', code: err && err.code, message: err && err.message })
-          if (err && err.code === 'NO_TOKEN') return reloadOnce()
+          if (err && err.code === 'NO_TOKEN') { saveDraft(form); return reloadOnce() }
+          session.stockAt = null   // 結果不確定（切片 P20）
           backToForm('送出的時候連線斷了，不確定有沒有送出。請確認網路之後，直接再按一次「送出」——系統認得同一張單，不會重複。')
         })
       }
@@ -3678,6 +3915,7 @@ var Core = (() => {
         function attempt(n) {
           armWatchdog(function () {
             if (!current(ticket)) return
+            session.stockAt = null   // 結果不確定（切片 P20）：下一次看庫存、開表單都重新拿
             begin()
             showError('等太久了，不確定有沒有撤回。請按「重新打開這張單」看狀態。', [reopen(), listButton(), homeButton()])
           })
@@ -3700,6 +3938,7 @@ var Core = (() => {
             if (!current(ticket)) return
             clearTimeout(watchdog)
             if (err && err.code === 'NO_TOKEN') return reloadOnce()
+            session.stockAt = null   // 結果不確定（切片 P20）
             showError('連線斷了，不確定有沒有撤回。請按「重新打開這張單」看狀態。', [reopen(), listButton(), homeButton()])
           })
         }
@@ -3982,6 +4221,7 @@ var Core = (() => {
           var reopen = function () { return button('重新打開這張單', function () { openDoc(d.docNo) }) }
           armWatchdog(function () {
             if (!current(ticket)) return
+            session.stockAt = null   // 結果不確定（切片 P20）：下一次看庫存、開表單都重新拿
             begin()
             showError('等太久了，不確定有沒有補完。請按「重新打開這張單」看狀態；再按一次也安全，不會重複寫。', [reopen(), listButton(), homeButton()])
           })
@@ -3997,6 +4237,7 @@ var Core = (() => {
             if (!current(ticket)) return
             clearTimeout(watchdog)
             if (err && err.code === 'NO_TOKEN') return reloadOnce()
+            session.stockAt = null   // 結果不確定（切片 P20）
             showError('連線斷了，不確定有沒有補完。請按「重新打開這張單」看狀態；再按一次也安全，不會重複寫。', [reopen(), listButton(), homeButton()])
           })
         }, 'primary')
@@ -4031,6 +4272,7 @@ var Core = (() => {
         function arm() {
           armWatchdog(function () {
             if (!current(ticket)) return
+            session.stockAt = null   // 結果不確定（切片 P20）：下一次看庫存、開表單都重新拿
             begin()
             showError(o.timeoutText, [reopen(), listButton(), homeButton()])
           })
@@ -4064,6 +4306,7 @@ var Core = (() => {
             if (!current(ticket)) return
             clearTimeout(watchdog)
             if (err && err.code === 'NO_TOKEN') return reloadOnce()
+            session.stockAt = null   // 結果不確定（切片 P20）
             showError(o.netText, [reopen(), listButton(), homeButton()])
           })
         }
@@ -4302,8 +4545,11 @@ var Core = (() => {
       //
       // **報表只存在畫面上與記憶體裡**（P3-8、T8）：結果與任何金額都不寫進 localStorage／
       // sessionStorage／IndexedDB，也不送進診斷面板（log 只記代碼與耗時）。離開報表畫面
-      // （回首頁、去別的畫面）時 render 會把它整個換掉；記憶體裡只留「上次選的期間」，
-      // 從單據明細按「回利潤報表」時重新向後端要一次。
+      // （回首頁、去別的畫面）時 render 會把它整個換掉。
+      //
+      // 從報表點進一張單、再按「回利潤報表」（切片 P20）：剛才那一份還在記憶體（lastProfit）→ 用它重畫，不再向後端要一次，
+      // 「每一張單」保持打開、捲回原本的位置；已經被清掉 → 照舊重新要一次。**清掉的時機寫死**：pagehide（不管現在
+      // 在哪一個畫面）、goHome、openProfit、runProfit（換期間）。lastProfit 的任何部分都不進 log()。
       //
       // 手機收起來、切到別的頁面時（pagehide）也先把報表從畫面上拿掉：瀏覽器可能把整頁
       // 凍結起來，按上一頁回來時原樣還原（bfcache）—— 那樣報表就會從「上一頁」回來。
@@ -4313,8 +4559,11 @@ var Core = (() => {
       var hiddenProfit = false
       // 自訂期間打到一半的兩個日期（只有日期，不是報表內容）：「看報表」被擋下時不用重打
       var customDraft = { start: '', end: '' }
+      // 剛才那一份報表：{ ask, res, scrollY }（切片 P20，見上面）。只在記憶體
+      var lastProfit = null
 
       window.addEventListener('pagehide', function () {
+        lastProfit = null   // 不管現在是不是在報表畫面（例如在從報表點進去的單子頁）都清掉
         if (!showingProfit) return
         hiddenProfit = true
         begin()
@@ -4334,6 +4583,7 @@ var Core = (() => {
       function openProfit() {
         begin()
         clearTimeout(watchdog)
+        lastProfit = null
         var row = el('div', { cls: 'units' })
         PERIODS.forEach(function (p) {
           row.appendChild(button(p[1], function () {
@@ -4424,6 +4674,7 @@ var Core = (() => {
 
       function runProfit(ask) {
         var t = begin()
+        lastProfit = null   // 換期間（或剛才那一份已經不能用）：重新要
         var t0 = Date.now()
         showLoading('正在算利潤…')
         var again = function () { return button('再試一次', function () { runProfit(ask) }) }
@@ -4463,21 +4714,31 @@ var Core = (() => {
         return b.startDate === from && b.endDate === to ? year + ' 年 ' + month + ' 月' : '自訂'
       }
 
-      function showProfit(r, ask) {
+      /**
+       * back（切片 P20，「回利潤報表」才有）：{ open: true, scrollY }——「每一張單」打開、捲回原本的位置。
+       */
+      function showProfit(r, ask, back) {
         clearTimeout(watchdog)
         var t = r.totals
-        // 先大字寫利潤：標題 → 期間名稱與日期 → 大字「利潤 X 元」→ 營收、成本、毛利率、張數 → 提示 → 說明 → 每種茶…（切片 P17）
+        // 先大字寫利潤：標題 → 期間名稱與日期 → 大字「利潤 X 元」→（等複核那一行）→ 換一個期間、回首頁 →
+        // 營收、成本、毛利率、張數 → 提示 → 說明 → 每種茶…（切片 P17、P20）
         var parts = [
           el('h2', { text: '利潤' }),
           el('p', { text: periodLabel(ask, r.period) + '（' + mdText(r.period.fromDate) + ' 到 ' + mdText(r.period.toDate) + '）' }),
           el('p', { cls: 'big', text: '利潤 ' + t.profitText + ' 元' }),
-          el('div', { cls: 'box' }, [
-            moneyRow('營收', t.revenueText),
-            moneyRow('成本', t.costText),
-            el('div', {}, [el('span', { text: '毛利率 ' }), el('span', { cls: 'num', text: t.marginText })]),
-            el('div', { text: '共 ' + t.docCount + ' 張單' }),
-          ]),
         ]
+        // 期間包含今天時，還在等複核的銷貨單張數（P19 後端的 pendingSaleCount；舊後端沒有這一欄就不顯示）
+        var pending = pendingLine(r)
+        if (pending !== '') parts.push(el('p', { text: pending }))
+        // 不用捲到最底下（切片 P20）
+        parts.push(periodButton())
+        parts.push(homeButton())
+        parts.push(el('div', { cls: 'box' }, [
+          moneyRow('營收', t.revenueText),
+          moneyRow('成本', t.costText),
+          el('div', {}, [el('span', { text: '毛利率 ' }), el('span', { cls: 'num', text: t.marginText })]),
+          el('div', { text: '共 ' + t.docCount + ' 張單' }),
+        ]))
 
         // 有幾種茶的庫存記錄壞了（切片 P7 B）：那些茶的銷貨整行不算。品名最多 5 個，後端從商品表查
         if (typeof r.brokenProductCount === 'number' && r.brokenProductCount > 0) {
@@ -4510,20 +4771,27 @@ var Core = (() => {
           ]))
         })
 
-        parts.push(el('h2', { text: '每一張單' }))
-        if (r.docTotal === 0) parts.push(el('p', { text: '這段期間沒有通過的銷貨單。' }))
+        // 每一張單（最多 200 張）預設收著（切片 P20，跟庫存的「每一格的明細」同一種寫法）；裡面的內容與順序不變
+        var docKids = [el('summary', { text: '每一張單（' + r.docTotal + ' 張）' })]
+        if (r.docTotal === 0) docKids.push(el('p', { text: '這段期間沒有通過的銷貨單。' }))
         if (r.docTotal > r.docs.length) {
-          parts.push(el('p', { cls: 'muted', text: '共 ' + r.docTotal + ' 張，只列出最新 ' + r.docs.length + ' 張（上面的合計與每種茶算的是全部）。' }))
+          docKids.push(el('p', { cls: 'muted', text: '共 ' + r.docTotal + ' 張，只列出最新 ' + r.docs.length + ' 張（上面的合計與每種茶算的是全部）。' }))
         }
-        var back = function () { return button('回利潤報表', function () { runProfit(ask) }) }
+        var toDoc = function () { return button('回利潤報表', function () { backToProfit(ask) }) }
         r.docs.forEach(function (d) {
-          var b = button('', function () { openDoc(d.docNo, back) }, 'wide')
+          var b = button('', function () {
+            lastProfit = { ask: ask, res: r, scrollY: window.scrollY }   // 回來時用這一份重畫（不進 log）
+            openDoc(d.docNo, toDoc)
+          }, 'wide')
           // 第一行大字：哪一天、賺多少（切片 P15）；營收、成本、送單人放小字；單號最後
           b.appendChild(el('div', { cls: 'num', text: mdText(d.reviewedDate) + '　利潤 ' + d.profitText + ' 元' }))
           b.appendChild(el('div', { cls: 'muted small', text: '營收 ' + d.revenueText + ' 元　成本 ' + d.costText + ' 元　' + d.createdByName }))
           b.appendChild(el('div', { cls: 'muted small', text: d.docNo }))
-          parts.push(b)
+          docKids.push(b)
         })
+        var docList = el('details', { cls: 'docs' }, docKids)
+        if (back && back.open === true) docList.open = true
+        parts.push(docList)
 
         parts.push(el('h2', { text: '贈品' }))
         if (r.gifts.length === 0) {
@@ -4538,10 +4806,124 @@ var Core = (() => {
           parts.push(el('div', { cls: 'box' }, [moneyRow('贈品成本合計', r.giftCostText), el('p', { cls: 'muted', text: '已經算在上面的成本與利潤裡。' })]))
         }
 
-        parts.push(periodButton())
         parts.push(homeButton())
         render(parts)
+        if (back && typeof back.scrollY === 'number') window.scrollTo(0, back.scrollY)
         showingProfit = true
+      }
+
+      /**
+       * 「回利潤報表」（切片 P20）：剛才那一份（lastProfit）還在 → 用它重畫，不再向後端要一次；「每一張單」打開、捲回原本的位置。
+       * 已經被清掉（例如在單子頁時 App 切到背景觸發了 pagehide）→ 照舊 runProfit(ask) 重新要一次。
+       */
+      function backToProfit(ask) {
+        var p = lastProfit
+        if (p === null) return runProfit(ask)
+        begin()
+        showProfit(p.res, p.ask, { open: true, scrollY: p.scrollY })
+      }
+
+      // ---- 填到一半不白丟（切片 P20）----
+      //
+      // (a) 按回首頁時表單有填東西 → 先問一次（homeButton → showLeaveConfirm）。
+      // (b) 送出時登入過期（A2）或拿不到登入憑證（NO_TOKEN）→ 重新登入會整頁換掉；後端在驗證階段就擋下、什麼都沒寫，
+      //     所以只是白填。三個送出的回呼在交給 handledAuth／reloadOnce 之前呼叫 saveDraft，回來之後首頁問要不要接著填。
+      //
+      // 草稿只放 sessionStorage（這個分頁關掉就不見）、只放她自己剛填的東西（具名欄位，draftOf），不放登入憑證、
+      // 不放使用者編號本身（只放它的 SHA-256：session.userHash）。綁同一個人、同一個角色、同一個分頁、30 分鐘（restoreDraft）。
+      // 畫出來一律 textContent／input.value；log() 只記步驟與項數，不記任何一項的內容或金額。
+
+      var DRAFT_KEY = 'poyuntea-draft'
+
+      function readDraft() {
+        try {
+          return sessionStorage.getItem(DRAFT_KEY)
+        } catch (e) {
+          return null
+        }
+      }
+
+      function dropDraft() {
+        try { sessionStorage.removeItem(DRAFT_KEY) } catch (e) {}
+      }
+
+      /**
+       * 先留一份。**同步、永遠不丟例外**：呼叫的人接著一定要跑 handledAuth／reloadOnce（看門狗已經清掉，不能讓畫面卡在「送出中…」）。
+       * 存不了（重開的表單、沒有使用者代號、暫存空間不能用）回 false，就跟以前一樣白填。
+       */
+      function saveDraft(f) {
+        try {
+          var d = draftOf(f, session.userHash)
+          if (d === null) return false
+          d.savedAt = Date.now()
+          d.role = session.stock ? session.stock.role : null
+          sessionStorage.setItem(DRAFT_KEY, JSON.stringify(d))
+          log({ step: 'draft-saved', lines: d.lines.length })
+          return true
+        } catch (e) {
+          return false
+        }
+      }
+
+      /**
+       * 首頁讀取成功時（landing）算這個 LINE 使用者代號（liff.getDecodedIDToken().sub）的 SHA-256，放進 session.userHash。
+       * NO_TOKEN 的時候已經拿不到憑證，所以要先算好。算不出來（沒有 sub、這個瀏覽器沒有 crypto.subtle）→ null：不存、不還原。
+       * 回一個一定成功的 Promise（值是雜湊或 null）。
+       */
+      function rememberUser() {
+        var sub = null
+        try {
+          var tok = liff.getDecodedIDToken()
+          if (tok && typeof tok.sub === 'string' && tok.sub !== '') sub = tok.sub
+        } catch (e) {}
+        try {
+          if (sub === null || !window.crypto || !window.crypto.subtle || typeof TextEncoder !== 'function') throw new Error('no hash')
+          return window.crypto.subtle.digest('SHA-256', new TextEncoder().encode(sub)).then(function (buf) {
+            session.userHash = hexOf(buf)
+            return session.userHash
+          }, function () {
+            session.userHash = null
+            return null
+          })
+        } catch (e) {
+          session.userHash = null
+          return Promise.resolve(null)
+        }
+      }
+
+      /** 首頁最上面的框（d 是 restoreDraft 的結果）。「不要了」→ 刪掉、首頁重畫（不再要一次資料）。 */
+      function draftBox(r, d) {
+        return el('div', { cls: 'box warn' }, [
+          el('p', { text: '剛才那張' + textOf(TYPE_TEXT, d.kind) + '還沒送出，已經幫你留著。' }),
+          button('接著填', function () { resumeDraft(d) }, 'primary'),
+          button('不要了', function () { dropDraft(); showHome(r) }),
+        ])
+      }
+
+      /**
+       * 「接著填」：用這些項目開同一種表單（照「照這張重開」建表單的方式：60 秒內沿用庫存、numberLines），requestId 用原本的，
+       * form.sent 種上 { 送出那一次的內容: 原本的 requestId }——改了又改回來仍拿回原本那個 id；改成不一樣的內容才換新 id。然後刪掉草稿。
+       */
+      function resumeDraft(d) {
+        openWithStock('draft-stock', function () {
+          form = numberLines({ kind: d.kind, requestId: d.requestId, lines: d.lines, sending: false, message: '', badLine: 0, attempt: 0 })
+          form.sent = d.sent   // numberLines 把 sent 設成空的，所以放在它後面
+          dropDraft()
+          log({ step: 'draft-resumed', lines: d.lines.length })
+          rerenderForm()
+        })
+      }
+
+      /** 「要放棄剛才填的嗎？」（照 showWithdrawConfirm 的樣子）。放棄 → 刪草稿、回首頁；繼續填 → 同一個 form 重畫（內容與展開狀態都在）。 */
+      function showLeaveConfirm() {
+        begin()
+        clearTimeout(watchdog)
+        var f = form
+        render([
+          el('h2', { text: '要放棄剛才填的嗎？' }),
+          button('放棄，回首頁', function () { dropDraft(); goHome() }),
+          button('繼續填', function () { form = f; rerenderForm() }, 'primary'),
+        ])
       }
 
       // ---- 身分憑證過期 ----
