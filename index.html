@@ -160,11 +160,13 @@ var Core = (() => {
     bookAsOfCount: () => bookAsOfCount,
     costEvents: () => costEvents,
     costOfOutflows: () => costOfOutflows,
+    countAdjustTotals: () => countAdjustTotals,
     describeQty: () => describeQty,
     farAbove: () => farAbove,
     farOff: () => farOff,
     fenToYuanText: () => fenToYuanText,
     isLooseTeaScale: () => isLooseTeaScale,
+    isLooseUnit: () => isLooseUnit,
     lineAmountFen: () => lineAmountFen,
     marginText: () => marginText,
     moveLegs: () => moveLegs,
@@ -172,6 +174,7 @@ var Core = (() => {
     normalizeBinCode: () => normalizeBinCode,
     onBookQty: () => onBookQty,
     onBookQtyInBin: () => onBookQtyInBin,
+    orphanCodes: () => orphanCodes,
     pendingSaleCount: () => pendingSaleCount,
     periodRange: () => periodRange,
     profitReport: () => profitReport,
@@ -184,6 +187,7 @@ var Core = (() => {
     taipeiDateOf: () => taipeiDateOf,
     taipeiYyyymmOf: () => taipeiYyyymmOf,
     toBaseQty: () => toBaseQty,
+    unitHistoryMismatch: () => unitHistoryMismatch,
     unitPriceFenFromAmount: () => unitPriceFenFromAmount,
     validateCountLine: () => validateCountLine,
     validateMoveLine: () => validateMoveLine,
@@ -218,6 +222,9 @@ var Core = (() => {
   }
   function isLooseTeaScale(scale) {
     return scale === 10;
+  }
+  function isLooseUnit(u) {
+    return typeof u === "string" && FACTORS[u] !== void 0;
   }
   function describeQty(baseQty, stockUnitScale, baseUnit) {
     if (!Number.isFinite(baseQty)) return "數量有問題";
@@ -535,6 +542,36 @@ var Core = (() => {
       book += toNumber(m.deltaBase, "庫存異動");
     }
     return { book };
+  }
+  var MAX_ORPHAN_CODE = 40;
+  var MAX_ORPHANS = 10;
+  function orphanCodes(moves, byCodeHas) {
+    const sums = /* @__PURE__ */ new Map();
+    const broken = /* @__PURE__ */ new Set();
+    for (const m of moves) {
+      const code = m.productCode;
+      if (typeof code !== "string" || code === "" || code.length > MAX_ORPHAN_CODE) continue;
+      if (broken.has(code)) continue;
+      const d = m.deltaBase;
+      if (typeof d !== "number" || !Number.isSafeInteger(d)) {
+        broken.add(code);
+        sums.delete(code);
+        continue;
+      }
+      sums.set(code, (sums.get(code) || 0) + d);
+    }
+    const out = [];
+    for (const [code, total] of sums) {
+      if (!Number.isSafeInteger(total)) continue;
+      if (!byCodeHas(code) && total !== 0) out.push(code);
+    }
+    out.sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
+    return out.slice(0, MAX_ORPHANS);
+  }
+  function unitHistoryMismatch(scale, inputUnits, baseUnit) {
+    if (scale === 10) return inputUnits.some((u) => !isLooseUnit(u));
+    if (scale === 1) return inputUnits.some((u) => isLooseUnit(u) && u !== baseUnit);
+    return false;
   }
 
   // src/core/docNo.js
@@ -889,6 +926,19 @@ var Core = (() => {
     if (typeof l.baseQty !== "number" || -o.deltaBase !== l.baseQty) return "qty";
     return null;
   }
+  function countAdjustTotals(items, fromMs, toMs) {
+    let lossFen = 0;
+    let gainFen = 0;
+    for (const it of items) {
+      const ms = it.reviewedMs;
+      if (typeof ms !== "number" || !Number.isFinite(ms)) continue;
+      if (!(ms >= fromMs && ms < toMs)) continue;
+      if (!Number.isSafeInteger(it.costFen)) continue;
+      if (it.kind === "out") lossFen += it.costFen;
+      else if (it.kind === "avg") gainFen += it.costFen;
+    }
+    return lossFen === 0 && gainFen === 0 ? null : { lossFen, gainFen };
+  }
 
   // src/core/review.js
   var STAMP3 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
@@ -952,7 +1002,7 @@ var Core = (() => {
       var LIFF_ID = '2011787319-F5PDXDUn'
       var BACKEND_URL = 'https://script.google.com/macros/s/AKfycbxkqeQVGN4njMFKBdfqpyabeVYQ_jgncRt33sC00RcNPrsTMQf_6XSuUQbkwjAkI6V0Xg/exec'
       // 這一頁是照哪一版後端發布的（切片 P16）：發布時換成那一次打包的版本碼（12 碼小寫十六進位）。不是機密
-      var EXPECTED_BUILD = '5bd300783074'
+      var EXPECTED_BUILD = '29b0e4b27c09'
 
       // 任何「正在讀取」超過這麼久就給他一顆按鈕 —— 不可以是死路。
       // 第一次冒煙測試在實機上就遇過 liff.init() 永遠不 settle。
@@ -1648,11 +1698,25 @@ var Core = (() => {
         return ''
       }
 
-      /** 老闆打開等複核的單，後端說有一張一模一樣的（doc.sameAs）：單號長得對（looksLikeDocNo）才回提醒的字，其他回 ''。 */
+      /**
+       * 老闆打開等複核的單，後端說有一張一模一樣的（doc.sameAs）：單號長得對（looksLikeDocNo）才回提醒的字，其他回 ''。
+       * 切片 P28：後端（P26）多給那一張的 sameAsBy（送單人姓名）與 sameAsAt（送出時間）時，寫成
+       * 「這張跟 M/D HH:MM <名字>送的 <單號> 內容一模一樣…」：時間是台北時間，看不懂就省略；沒有名字（舊後端）→ 原本那一句。
+       * 回的是字，畫面一律用 textContent 放（名字是試算表來的字）。
+       */
       function sameAsText(doc) {
         var no = doc ? doc.sameAs : null
         if (!looksLikeDocNo(no)) return ''
-        return '這張跟 ' + no + ' 內容一模一樣（同一個人、30 分鐘內送的），請確認不是重送了。'
+        var by = typeof doc.sameAsBy === 'string' ? doc.sameAsBy.trim() : ''
+        if (by === '') return '這張跟 ' + no + ' 內容一模一樣（同一個人、30 分鐘內送的），請確認不是重送了。'
+        var ms = typeof doc.sameAsAt === 'string' ? Date.parse(doc.sameAsAt) : NaN
+        var at = ''
+        if (isFinite(ms)) {
+          var tp = new Date(ms + 8 * 3600000)   // 台北 = UTC+8（沒有夏令時間）
+          var two = function (n) { return (n < 10 ? '0' : '') + n }
+          at = (tp.getUTCMonth() + 1) + '/' + tp.getUTCDate() + ' ' + two(tp.getUTCHours()) + ':' + two(tp.getUTCMinutes()) + ' '
+        }
+        return '這張跟 ' + at + by + '送的 ' + no + ' 內容一模一樣，請確認不是重送了。'
       }
 
       /**
@@ -1667,6 +1731,81 @@ var Core = (() => {
         if (below) out.push('這張單有項目低於建議價（左邊有紅線的那幾項），請看過再決定。')
         if (far) out.push('這張單有金額跟平常差很多的項目，請看過再決定。')
         return out
+      }
+
+      // ---- 更好用五（切片 P28）要被檢查的決定：一樣是純函式（test/better-use-5.test.js 抽出來執行）----
+
+      /** 「通過」要不要按兩次：上方紅框有任何一行（reviewBanner 回的是陣列），或有重送提醒（sameAsText 不是 ''）。 */
+      function needsSecondTap(d, lines) {
+        return reviewBanner(lines).length > 0 || sameAsText(d) !== ''
+      }
+
+      /**
+       * 通過之後那一行灰字是不是這支手機第一次看到：getStorage 是「取得 localStorage 的函式」——瀏覽器擋住儲存時，
+       * 光是讀 localStorage 這個屬性就會丟例外，所以連讀取都放在 try 裡。記號是 '1' → false（看過了）；
+       * 不是 → 記下 '1'、回 true。取得、讀、寫任何一步丟例外 → true（保守：照樣顯示）。
+       */
+      function approveNoteFirstTime(getStorage) {
+        try {
+          var s = getStorage()
+          if (s.getItem('poyuntea-approve-note-seen') === '1') return false
+          s.setItem('poyuntea-approve-note-seen', '1')
+          return true
+        } catch (e) {
+          return true
+        }
+      }
+
+      /** 重送提醒框「這張是重複的，退回」帶進退回原因框的那一句（也在常用原因的最後）。 */
+      function duplicateRejectReason() {
+        return '重複送出了，不用再送'
+      }
+
+      /**
+       * 盤點表單的一項怎麼畫：'compact'（按格子盤帶出來、沒按「改」）、'full'（攤開）、'summary'（收成一行）。
+       * expanded：使用者按過「改」（在 form.expanded 裡）；open：今天的規則（isOpenLine）。
+       */
+      function countLineView(ln, expanded, open) {
+        if (expanded === true) return 'full'
+        if (!!ln && ln.fromBin === true) return 'compact'
+        return open === true ? 'full' : 'summary'
+      }
+
+      /** 盤點表單上方那一行「這一格如果還有別的茶…」：表單裡還有任何一項是按格子盤帶出來的（fromBin）。 */
+      function binHintShown(lines) {
+        return Array.isArray(lines) && lines.some(function (ln) { return !!ln && ln.fromBin === true })
+      }
+
+      /**
+       * 老闆首頁的商品設定提醒（後端 P26 的 orphanCodes、unitMismatchNames），回每一行的字。店長一律 []。
+       * 每個值要是字串、不是空的、最長 40 字，不合格的跳過，最多 10 個。字一律用 textContent 放。
+       */
+      function productSetupLines(role, r) {
+        if (role !== 'OWNER' || !r) return []
+        var pick = function (v) {
+          return (Array.isArray(v) ? v : []).filter(function (x) { return typeof x === 'string' && x.trim() !== '' && x.length <= 40 }).slice(0, 10)
+        }
+        var out = []
+        var codes = pick(r.orphanCodes)
+        if (codes.length > 0) out.push('商品表找不到、但帳上還有庫存的代號：' + codes.join('、') + '。如果是改了代號，請改回原本的，或截圖給開發的人。')
+        var names = pick(r.unitMismatchNames)
+        if (names.length > 0) out.push('這幾種茶的單位比例跟以前的單對不上：' + names.join('、') + '。先別用它們記帳，截圖給開發的人。')
+        return out
+      }
+
+      /**
+       * 利潤頁合計框下面那一行（後端 P26 的 countAdjust：{ lossText, gainText } 或 null）。某一項是 0（或看不懂）只寫另一項；
+       * 兩項都沒有、null、沒有這個欄位 → ''（不顯示）。
+       */
+      function countAdjustLine(c) {
+        if (!c || typeof c !== 'object') return ''
+        var money = function (v) { return typeof v === 'string' && /^\d+(\.\d{1,2})?$/.test(v) && Number(v) > 0 ? v : '' }
+        var loss = money(c.lossText)
+        var gain = money(c.gainText)
+        var bits = []
+        if (loss !== '') bits.push('少了 ' + loss + ' 元（成本）')
+        if (gain !== '') bits.push('多了 ' + gain + ' 元')
+        return bits.length === 0 ? '' : '這段期間盤點：' + bits.join('，') + '。'
       }
 
       /** 台北的今天與昨天（'YYYY-MM-DD'）。**唯一**算今天、昨天的地方：利潤頁的「今天」「昨天」鍵與 periodLabel 都用它。 */
@@ -2235,6 +2374,8 @@ var Core = (() => {
             parts.push(button('重新整理', function () { goHome() }))
           }
         })
+        // 商品設定有問題（切片 P28，後端 P26 的 orphanCodes、unitMismatchNames）：只有老闆，版本灰字的上面，一行一句灰字
+        productSetupLines(r.role, r).forEach(function (line) { parts.push(el('p', { cls: 'muted', text: line })) })
         // 線上的後端跟這一頁不是同一版（切片 P16）：只有老闆，最下面一行灰字
         if (showBuildWarning(r.role, EXPECTED_BUILD, r.buildId)) {
           parts.push(el('p', { cls: 'muted', text: '後端還不是最新版。請告訴開發者：可能還沒部署新版本。' }))
@@ -2956,10 +3097,15 @@ var Core = (() => {
             el('p', { cls: 'num', text: r.docNo }),
           ]),
         ]
-        // 送錯了一鍵撤回（切片 P24）：只有店長。打開那張單，還在等複核的話畫面本來就有「撤回這張」，撤回流程不變
+        // 連續記帳（切片 P28）：「再開一張…」緊接在單號下面，不用捲到底
+        var opener = { PURCHASE: openPurchase, SALE: openSale, ADJUST: openCount, MOVE: openMove }
+        if (Object.prototype.hasOwnProperty.call(opener, type)) {
+          parts.push(button(AGAIN[type], function () { opener[type]() }))
+        }
+        // 送錯了一鍵撤回（切片 P24）：只有店長。切片 P28 起直接到「確定撤回」那一頁（withdrawFromSubmitted），撤回流程與後端檢查不變
         if (canOfferWithdraw(session.stock ? session.stock.role : null)) {
           parts.push(el('p', { cls: 'muted', text: '老闆還沒通過之前，送錯可以撤回。' }))
-          parts.push(button('送錯了？撤回這張', function () { openDoc(r.docNo) }))
+          parts.push(button('送錯了？撤回這張', function () { withdrawFromSubmitted(r.docNo) }))
         }
         if (r.duplicate) {
           parts.push(el('p', { cls: 'muted', text: '這張單剛才已經送出過了，下面是當時存下的內容。' }))
@@ -2969,11 +3115,25 @@ var Core = (() => {
         r.lines.forEach(function (l) { parts.push(lineItem(l, type)) })
         if (hasMoney(type)) parts.push(el('p', { cls: 'num', text: '合計 ' + r.totalText + ' 元' }))
         parts.push(homeButton())
-        var opener = { PURCHASE: openPurchase, SALE: openSale, ADJUST: openCount, MOVE: openMove }
-        if (Object.prototype.hasOwnProperty.call(opener, type)) {
-          parts.push(button(AGAIN[type], function () { opener[type]() }))
-        }
         render(parts)
+      }
+
+      /**
+       * 送出畫面的「送錯了？撤回這張」（切片 P28）：讀那張單；還能撤回（canWithdraw：店長、還在等複核）→ 直接是確認頁
+       * （showWithdrawConfirm；「不撤回」照舊回到這張單）；已經被處理了 → 照舊打開單據畫面；讀不到 → 錯誤畫面。
+       * 跟 openDoc 一樣拿一張票：晚回來的回應不可以蓋掉她剛打開的新表單。
+       */
+      function withdrawFromSubmitted(docNo) {
+        docBack = null
+        var t = begin()
+        showLoading()
+        call('getDoc', { docNo: docNo }).then(function (r) {
+          if (!current(t)) return
+          if (r.ok && canWithdraw(r.doc, session.stock ? session.stock.role : null)) return showWithdrawConfirm(r, '', '')
+          if (r.ok) return showDoc(r, '')
+          if (handledAuth(r)) return
+          showError(messageOf(r), [backFromDoc(), homeButton()])
+        }).catch(netFailed(t, null, [backFromDoc(), homeButton()]))
       }
 
       // ---- 銷貨 ----
@@ -3650,7 +3810,14 @@ var Core = (() => {
         parts.push(help)
         parts = parts.concat(reopenNotes())
         if (form.message) parts.push(el('div', { cls: 'box' }, [el('p', { cls: 'bad', text: form.message })]))
-        form.lines.forEach(function (ln, i) { parts.push(isOpenLine(ln, i) ? lineBox(ln, i) : summaryBox(ln, i)) })
+        form.lines.forEach(function (ln, i) {
+          // 盤點按格子盤帶出來的（切片 P28）：沒按「改」之前畫精簡的框（countLineView）；其他照舊
+          if (kind === 'ADJUST') {
+            var how = countLineView(ln, form.expanded.indexOf(ln.id) !== -1, isOpenLine(ln, i))
+            return parts.push(how === 'compact' ? compactCountBox(ln, i) : how === 'full' ? lineBox(ln, i) : summaryBox(ln, i))
+          }
+          parts.push(isOpenLine(ln, i) ? lineBox(ln, i) : summaryBox(ln, i))
+        })
         if (form.lines.length < MAX_LINES) {
           if (kind === 'ADJUST') {
             // 盤點（切片 P17）：兩種下一項。同一格有好幾種茶 → 沿用格子；同一種茶放好幾格 → 沿用茶與單位
@@ -3802,9 +3969,41 @@ var Core = (() => {
         return box
       }
 
+      /**
+       * 按格子盤帶出來的一項（切片 P28，fromBin、還沒按「改」）：商品與格子已經帶好，只畫一行茶名（粗體）＋格子（灰字）、
+       * 數量框、這個商品的單位鍵（purchaseUnits，記住的先選好）、「這一格沒有了」、「改」（攤開成完整的 countLineBox）。
+       * **不顯示任何帳上數量**。商品已經不在清單裡 → 照舊畫完整的框。
+       */
+      function compactCountBox(ln, i) {
+        var product = productOf(ln.code)
+        if (!product) return countLineBox(ln, i)
+        var locked = form.sending
+        var box = lineFrame(i)
+        box.firstChild.textContent = (i + 1) + '. ' + product.name
+        box.insertBefore(el('p', { cls: 'muted', text: '格子 ' + ln.bin }), box.firstChild.nextSibling)
+        var qty = qtyInput(ln, locked)
+        qty.setAttribute('aria-label', '第 ' + (i + 1) + ' 項這一格實際有多少')
+        box.appendChild(qty)
+        box.appendChild(unitButtonsFor(ln, product, locked))
+        var none = button('這一格沒有了', function () {
+          if (form.sending) return
+          ln.qty = '0'
+          edited()
+          renderCountForm(true)
+        })
+        none.disabled = locked
+        var edit = button('改', function () { if (!form.sending) onEditLine(form, ln) })
+        edit.setAttribute('aria-label', '改第 ' + (i + 1) + ' 項')
+        edit.disabled = locked
+        box.appendChild(el('div', { cls: 'units' }, [none, edit]))
+        return box
+      }
+
       function renderCountForm(keepScroll) {
         var one = el('p', { cls: 'muted' }, [el('span', { text: '填這一格' }), el('strong', { text: '實際' }), el('span', { text: '有多少，不用看帳上。' })])
-        renderLines('ADJUST', '盤點', el('div', {}, [one, countByBinRow()]), [
+        // 按格子盤之後（切片 P28）：表單裡還有按格子盤帶出來的項目，上方一直有這一行
+        var hint = binHintShown(form.lines) ? el('p', { cls: 'muted', text: '這一格如果還有別的茶，按『同一格，下一種茶』。' }) : null
+        renderLines('ADJUST', '盤點', el('div', {}, [one, countByBinRow(), hint]), [
           '一格一格盤：填「這一格現在實際有多少」。一張最多 ' + MAX_LINES + ' 項。同一格有好幾種茶，按『同一格，下一種茶』。',
           '從開始點貨到按「送出」，這一格不要出貨、也不要送別的單。',
           '送出之後要等老闆按「通過」，庫存才會照你盤到的數字調整。新進的貨請用進貨單。',
@@ -3892,7 +4091,8 @@ var Core = (() => {
         got.lines.forEach(function (x) {
           var it = productOf(x.code)
           if (!it) return
-          var ln = { code: it.code, bin: x.bin, qty: '', unit: unitAfterPick(it.purchaseUnits, rememberedLineUnit(it.code)) }
+          // fromBin（切片 P28）：這一項畫成精簡的框（countLineView）
+          var ln = { code: it.code, bin: x.bin, qty: '', unit: unitAfterPick(it.purchaseUnits, rememberedLineUnit(it.code)), fromBin: true }
           ln.id = ++form.nextId
           kept.push(ln)
         })
@@ -4351,6 +4551,8 @@ var Core = (() => {
                 return button('回到剛才那一張', function () { openDoc(d.docNo, origBack) })
               })
             }, 'wide'),
+            // 一鍵退回（切片 P28）：原因先填好「重複送出了…」，到退回畫面還要按「確定退回」才送出
+            owner && d.status === 'PENDING' ? button('這張是重複的，退回', function () { rejectWithReason(r, duplicateRejectReason()) }, 'wide') : null,
           ]))
         }
         // 摘要框：類型、合計（銷貨、進貨才有）、送單人、時間；單號與狀態放在最後
@@ -4419,9 +4621,33 @@ var Core = (() => {
             parts.push(blockedCountBox(r))
             if (repair === null) parts.push(back)
           } else {
-            var pass = button(PASS_TEXT[d.docType], function () { review(r, pass, reviewButtons) }, repair === null ? 'primary' : undefined)
+            // 有警示的單（切片 P28，needsSecondTap：紅框或重送提醒）「通過」要按兩次：第一次只換字、下面多一行灰字，
+            // 10 秒內再按才送出；超過 10 秒當成第一次。「按過一次」只記在這顆鍵的閉包裡（換一張單就重新算）。
+            // 10 秒後把字換回來；畫面已經換掉（票不是第一次按的時候那一張）就不動
+            var armedAt = null
+            var armTimer = null
+            var armNote = el('p', { cls: 'muted', text: '再按一次才會通過' })
+            armNote.hidden = true
+            var pass = button(PASS_TEXT[d.docType], function () {
+              if (pass.disabled) return
+              if (!needsSecondTap(d, r.lines)) return review(r, pass, reviewButtons)
+              var now = Date.now()
+              if (armedAt !== null && now - armedAt <= 10000) return review(r, pass, reviewButtons)
+              armedAt = now
+              pass.textContent = '確定通過？這張有要注意的地方'
+              armNote.hidden = false
+              var armTicket = view
+              clearTimeout(armTimer)
+              armTimer = setTimeout(function () {
+                if (!current(armTicket)) return
+                armedAt = null
+                pass.textContent = PASS_TEXT[d.docType]
+                armNote.hidden = true
+              }, 10000)
+            }, repair === null ? 'primary' : undefined)
             reviewButtons.push(pass, back)
             parts.push(pass)
+            parts.push(armNote)
             // 通過與退回拉開（切片 P24）：「退回」自己一列、前面至少 24px，免得按錯；按鍵樣子不變
             if (repair === null) parts.push(el('div', { cls: 'apart' }, [back]))
           }
@@ -4671,7 +4897,16 @@ var Core = (() => {
       var rejectDraft = null
 
       // 退回原因常用的幾句：按一下放進原因框，還可以再改
-      var QUICK_REASONS = ['數量不對', '價錢不對', '格子不對', '商品選錯', '請重開一張']
+      var QUICK_REASONS = ['數量不對', '價錢不對', '格子不對', '商品選錯', '請重開一張', '重複送出了，不用再送']
+
+      /**
+       * 原因先填好再進退回畫面（切片 P28，重送提醒的「這張是重複的，退回」）：照 showRejectForm 讀 rejectDraft 的格式
+       * （{ docNo, text }）先放進去。**不跳過確認**：還是要按「確定退回」才送出，後端照樣檢查身分與 updatedAt。
+       */
+      function rejectWithReason(r, text) {
+        rejectDraft = { docNo: r.doc.docNo, text: text }
+        showRejectForm(r, '')
+      }
 
       /**
        * 退回要寫原因（必填，100 字以內），送單的人會看到。
@@ -4759,13 +4994,16 @@ var Core = (() => {
       function showReviewed(docNo, status, docType) {
         session.stockAt = null   // 庫存變了：下一張表單要重新拿
         var posted = textOf(POSTED_TEXT, docType)
+        // 通過之後沒有更正的路（切片 P24）：照抄第四輪總覽〈共用檔案與共用說法〉那一句（render 略過 null）。
+        // 切片 P28：這支手機第一次通過才顯示（approveNoteFirstTime；儲存不能用時照樣顯示）。退回不會走到它，所以不會記下
+        var note = status === 'POSTED' ? el('p', { cls: 'muted', text: '通過之後就不能改了。發現錯了，請截圖給開發的人，不要自己改試算表。' }) : null
+        if (note !== null && !approveNoteFirstTime(function () { return localStorage })) note = null
         render([
           el('div', { cls: 'box' }, [
             el('p', { cls: 'good', text: status === 'POSTED' ? posted : '已退回。送單的人會在「我送出的單」看到原因。' }),
             el('p', { cls: 'num', text: docNo }),
           ]),
-          // 通過之後沒有更正的路（切片 P24）：照抄第四輪總覽〈共用檔案與共用說法〉那一句（render 略過 null）
-          status === 'POSTED' ? el('p', { cls: 'muted', text: '通過之後就不能改了。發現錯了，請截圖給開發的人，不要自己改試算表。' }) : null,
+          note,
           nextSlot(docNo),
           listButton(),
           homeButton(),
@@ -5053,6 +5291,9 @@ var Core = (() => {
           el('div', {}, [el('span', { text: '毛利率 ' }), el('span', { cls: 'num', text: t.marginText })]),
           el('div', { text: '共 ' + t.docCount + ' 張單' }),
         ]))
+        // 盤點損耗與盤盈（切片 P28，後端 P26 的 countAdjust）：不算在利潤裡，合計框下面另外一行；沒有就不顯示
+        var adjust = countAdjustLine(r.countAdjust)
+        if (adjust !== '') parts.push(el('p', { text: adjust }))
 
         // 有幾種茶的庫存記錄壞了（切片 P7 B）：那些茶的銷貨整行不算。品名最多 5 個，後端從商品表查
         if (typeof r.brokenProductCount === 'number' && r.brokenProductCount > 0) {
