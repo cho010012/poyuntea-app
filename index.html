@@ -112,6 +112,8 @@
     .box.warn { border: 4px solid var(--warn); background: var(--warn-bg); }
     /* 老闆複核：「退回」跟「通過」拉開（切片 P24）。只有間距，按鍵樣子不變 */
     .apart { margin-top: 24px; }
+    /* 備註（切片 P29）：使用者打的字放在自己的 span（dir="auto"），方向自己判斷、不打亂旁邊的字 */
+    .note-text { unicode-bidi: isolate; }
   </style>
 </head>
 <body>
@@ -150,6 +152,8 @@ var Core = (() => {
   var index_exports = {};
   __export(index_exports, {
     DISPLAY_UNITS: () => DISPLAY_UNITS,
+    MAX_NOTE: () => MAX_NOTE,
+    MAX_NOTE_RAW: () => MAX_NOTE_RAW,
     PERIOD_KINDS: () => PERIOD_KINDS,
     PURCHASE_UNITS: () => PURCHASE_UNITS,
     SALE_UNITS: () => SALE_UNITS,
@@ -158,6 +162,7 @@ var Core = (() => {
     avgCostFenPerQuote: () => avgCostFenPerQuote,
     baseQtyOf: () => baseQtyOf,
     bookAsOfCount: () => bookAsOfCount,
+    cleanNote: () => cleanNote,
     costEvents: () => costEvents,
     costOfOutflows: () => costOfOutflows,
     countAdjustTotals: () => countAdjustTotals,
@@ -990,6 +995,17 @@ var Core = (() => {
   function farOff(amountFen, refFen) {
     return farAbove(amountFen, refFen) || farAbove(refFen, amountFen);
   }
+
+  // src/core/note.js
+  var MAX_NOTE = 50;
+  var MAX_NOTE_RAW = 400;
+  var NOTE_BREAK = /\r\n|[\r\n\u2028\u2029]/g;
+  var NOTE_JUNK = /[\u0000-\u001F\u007F-\u009F\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069\u200B-\u200D\u2060-\u2064\uFEFF\u00AD\u180E\u3164\u115F\u1160\uFFF9-\uFFFB\u{E0000}-\u{E007F}]/gu;
+  var NOTE_LEAD = /^[\s']+/;
+  function cleanNote(v) {
+    if (typeof v !== "string") return "";
+    return v.replace(NOTE_BREAK, " ").replace(NOTE_JUNK, "").trim().replace(NOTE_LEAD, "");
+  }
   return __toCommonJS(index_exports);
 })();
 
@@ -1002,7 +1018,7 @@ var Core = (() => {
       var LIFF_ID = '2011787319-F5PDXDUn'
       var BACKEND_URL = 'https://script.google.com/macros/s/AKfycbxkqeQVGN4njMFKBdfqpyabeVYQ_jgncRt33sC00RcNPrsTMQf_6XSuUQbkwjAkI6V0Xg/exec'
       // 這一頁是照哪一版後端發布的（切片 P16）：發布時換成那一次打包的版本碼（12 碼小寫十六進位）。不是機密
-      var EXPECTED_BUILD = '29b0e4b27c09'
+      var EXPECTED_BUILD = '06f700eedba6'
 
       // 任何「正在讀取」超過這麼久就給他一顆按鈕 —— 不可以是死路。
       // 第一次冒煙測試在實機上就遇過 liff.init() 永遠不 settle。
@@ -1607,11 +1623,42 @@ var Core = (() => {
         return typeof code === 'string' && Object.prototype.hasOwnProperty.call(STOP, code)
       }
 
-      /** 送單的內容。照這張重開的表單多帶 reopenedFrom（reopenDraft 給的原本那張的單號）；一般的表單沒有這個欄位。 */
+      /**
+       * 送單的內容。照這張重開的表單多帶 reopenedFrom（reopenDraft 給的原本那張的單號）；一般的表單沒有這個欄位。
+       * 備註（切片 P29）：mine.note 是不是空的字串才用 Core.cleanNote 清理，清理後不是空的才帶 note；
+       * 沒有備註時不碰 Core，送出的內容跟以前一模一樣。
+       */
       function submitBody(mine, lines) {
         var body = { requestId: mine.requestId, lines: lines }
         if (mine.reopenedFrom !== undefined) body.reopenedFrom = mine.reopenedFrom
+        if (typeof mine.note === 'string' && mine.note !== '') {
+          var note = Core.cleanNote(mine.note)
+          if (note !== '') body.note = note
+        }
         return body
+      }
+
+      // ---- 備註（切片 P29，計畫 docs/superpowers/plans/2026-11-13-備註.md）：一樣是純函式（test/note-ui.test.js 抽出來執行）----
+      //
+      // 清理一律用內嵌的 Core.cleanNote、字數上限一律用 Core.MAX_NOTE（跟後端同一份），不另寫一份。
+      // Core.cleanNote 只在拿到不是空的字串時才呼叫：沒有備註的表單完全不碰它。
+
+      /**
+       * 送過的內容也算備註：submitSnapshot 不改，這裡在它後面接上清理過的備註。備註不是非空字串、或清理後是空的 → 原樣回傳 snap；
+       * 否則 snap + '|' + JSON.stringify(清理過的備註)。只改了備註再送 → 換新的 requestId（那是第二張單，老闆那邊照舊有重送提醒）。
+       */
+      function snapWithNote(snap, note) {
+        if (typeof note !== 'string' || note === '') return snap
+        var clean = Core.cleanNote(note)
+        if (clean === '') return snap
+        return snap + '|' + JSON.stringify(clean)
+      }
+
+      /** 備註格下面那一行：清理後用 Array.from 算字數（跟後端同一套）。回 { over, text }：超過 Core.MAX_NOTE → over。 */
+      function noteHint(note) {
+        var n = typeof note === 'string' && note !== '' ? Array.from(Core.cleanNote(note)).length : 0
+        if (n > Core.MAX_NOTE) return { over: true, text: '備註最多 ' + Core.MAX_NOTE + ' 個字' }
+        return { over: false, text: '還可以寫 ' + (Core.MAX_NOTE - n) + ' 個字' }
       }
 
       // ---- 內容沒變就不會變成新單（切片 P14 第一項）：一樣是純函式（test/request-id.test.js 抽出來執行）----
@@ -1889,7 +1936,13 @@ var Core = (() => {
           if (kind === 'ADJUST') return { code: s(ln.code), bin: s(ln.bin), qty: s(ln.qty), unit: s(ln.unit) }
           return { code: s(ln.code), bin: s(ln.bin), to: s(ln.to), qty: s(ln.qty), unit: s(ln.unit) }
         })
-        return { v: 1, kind: kind, requestId: f.requestId, snap: snap, userHash: userHash, lines: lines }
+        var out = { v: 1, kind: kind, requestId: f.requestId, snap: snap, userHash: userHash, lines: lines }
+        // 備註（切片 P29）：清理後不是空的才存；沒有備註時跟以前一模一樣
+        if (typeof f.note === 'string' && f.note !== '') {
+          var note = Core.cleanNote(f.note)
+          if (note !== '') out.note = note
+        }
+        return out
       }
 
       /**
@@ -1959,7 +2012,13 @@ var Core = (() => {
         if (lines.length === 0) return null
         var sent = {}
         sent[d.snap] = d.requestId
-        return { kind: kind, requestId: d.requestId, sent: sent, lines: lines }
+        var out = { kind: kind, requestId: d.requestId, sent: sent, lines: lines }
+        // 備註（切片 P29）：不是字串 → 當成沒有（不會因為它讓整份草稿作廢）；是字串 → 清理、最多 Core.MAX_NOTE 個字，不是空的才放
+        if (typeof d.note === 'string' && d.note !== '') {
+          var note = Array.from(Core.cleanNote(d.note)).slice(0, Core.MAX_NOTE).join('')
+          if (note !== '') out.note = note
+        }
+        return out
       }
 
       // ---- 表單版面（切片 P13）要被檢查的決定：一樣是純函式（test/form-layout.test.js 抽出來執行）----
@@ -2927,9 +2986,11 @@ var Core = (() => {
           flagLine(form, checked.message, checked.line)
           return renderForm()
         }
+        if (stopLongNote(form, renderForm)) return
         var mine = form
         // 切片 P14：送出用的 requestId 由內容決定（同樣的內容沿用第一次送出時的 id）
         var snap = submitSnapshot('PURCHASE', checked.lines)
+        snap = snapWithNote(snap, mine.note)
         mine.requestId = pickRequestId(mine.sent, snap, mine.requestId, newRequestId)
         mine.sent[snap] = mine.requestId
         var ticket = begin()
@@ -3525,10 +3586,12 @@ var Core = (() => {
           flagLine(form, checked.message, checked.line)
           return renderSaleForm()
         }
+        if (stopLongNote(form, renderSaleForm)) return
         rememberSaleUnits(checked.lines)
         var mine = form
         // 切片 P14：送出用的 requestId 由內容決定（同樣的內容沿用第一次送出時的 id）
         var snap = submitSnapshot('SALE', checked.lines)
+        snap = snapWithNote(snap, mine.note)
         mine.requestId = pickRequestId(mine.sent, snap, mine.requestId, newRequestId)
         mine.sent[snap] = mine.requestId
         var ticket = begin()
@@ -3801,6 +3864,48 @@ var Core = (() => {
        * 表單的外殼：標題、回首頁、一行重點（其餘的說明收在「說明」裡）、重開的提醒、錯誤、每一項
        * （填完的收成一行）、再加一項、大大的送出（寫著幾項、合計多少）。
        */
+      /**
+       * 備註格（切片 P29）：四種表單送出鍵上方。單行、不設 maxlength（字數用 noteHint 算，跟後端同一套）、
+       * autocomplete="off"（共用手機時不帶出別的客人的名字）。值放在 f.note：一打開就顯示它，每次輸入都寫回並呼叫 edited()。
+       * 送出時的 mine 就是 form，所以 mine.note 就是這個值。**不記錄**（log 不碰備註）。
+       */
+      function noteField(f) {
+        var label = el('label', { text: '備註（選填）' })
+        label.setAttribute('for', 'note-input')
+        var input = el('input')
+        input.type = 'text'
+        input.id = 'note-input'
+        input.setAttribute('autocomplete', 'off')
+        input.setAttribute('dir', 'auto')
+        input.placeholder = '例如：王小姐。不要寫電話、地址'
+        input.value = typeof f.note === 'string' ? f.note : ''
+        input.disabled = f.sending === true
+        var hint = el('p')
+        function paint() {
+          var h = noteHint(f.note)
+          hint.className = h.over ? 'bad' : 'muted'
+          hint.textContent = h.text
+        }
+        paint()
+        input.addEventListener('input', function () {
+          f.note = input.value
+          paint()
+          edited()
+        })
+        var box = el('div', {}, [label, input, hint])
+        box.setAttribute('data-note', '1')
+        return box
+      }
+
+      /** 送出前：備註超過 Core.MAX_NOTE 個字 → 重畫（那一格下面是紅字「備註最多 50 個字」）、捲到那一格，回 true（不送出）。 */
+      function stopLongNote(f, rerender) {
+        if (!noteHint(f.note).over) return false
+        rerender()
+        var box = document.querySelector('#app [data-note]')
+        if (box && typeof box.scrollIntoView === 'function') box.scrollIntoView({ block: 'center' })
+        return true
+      }
+
       function renderLines(kind, title, oneLine, details, lineBox, blank, send, keepScroll) {
         var f = form
         var parts = [el('h2', { text: title }), homeButton('回首頁（不送出）'), oneLine]
@@ -3833,6 +3938,7 @@ var Core = (() => {
             parts.push(more)
           }
         }
+        parts.push(noteField(f))
         var go = button(form.sending ? '送出中…' : submitLabel(kind, form.lines, { fenOf: fenOf }), send.submit, 'primary full submit')
         go.disabled = form.sending
         parts.push(go)
@@ -3851,9 +3957,11 @@ var Core = (() => {
           flagLine(form, checked.message, checked.line)
           return rerender()
         }
+        if (stopLongNote(form, rerender)) return
         var mine = form
         // 切片 P14：送出用的 requestId 由內容決定（同樣的內容沿用第一次送出時的 id）
         var snap = submitSnapshot(kind, checked.lines)
+        snap = snapWithNote(snap, mine.note)
         mine.requestId = pickRequestId(mine.sent, snap, mine.requestId, newRequestId)
         mine.sent[snap] = mine.requestId
         var ticket = begin()
@@ -4253,6 +4361,8 @@ var Core = (() => {
             // 自己撤回的（切片 P11）：重開的說明不寫「老闆退回的原因」
             withdrawn: d.withdrawn === true,
           })
+          // 備註（切片 P29）：原本那張的備註帶回表單（reopenDraft 不改）；清理過、最多 Core.MAX_NOTE 個字
+          if (typeof d.note === 'string' && d.note !== '') form.note = Array.from(Core.cleanNote(d.note)).slice(0, Core.MAX_NOTE).join('')
           // 退回原因點名的項次（「第 2 項；數量不對」，切片 P17）：那幾項也攤開，並寫「老闆說這一項要改」。
           // 只影響畫面攤開哪幾項：不碰 problem（不紅框、不算進 N），送出的資料也不帶 named
           var named = namedLines(form.reopenReason, form.lines.length)
@@ -4411,6 +4521,17 @@ var Core = (() => {
 
       // ---- 待複核（老闆）／我送出的單（店長） ----
 
+      /**
+       * 「備註：王小姐」那一行（切片 P29；單據畫面與三個清單共用）。note 不是非空字串 → null（el 會略過）。
+       * 備註文字放在自己的 span：dir="auto"、.note-text（unicode-bidi: isolate），不打亂旁邊的字。只用 textContent。
+       */
+      function noteLine(prefix, note, cls) {
+        if (typeof note !== 'string' || note === '') return null
+        var text = el('span', { cls: 'note-text', text: note })
+        text.setAttribute('dir', 'auto')
+        return el('div', { cls: cls }, prefix ? [el('span', { text: prefix }), text] : [text])
+      }
+
       function listButton() {
         return button(isOwner() ? '回待複核清單' : '回我送出的單', function () { openList() })
       }
@@ -4450,6 +4571,9 @@ var Core = (() => {
           // 第一行大字：類型與項數（銷貨、進貨加合計）；單號小字放最後
           b.appendChild(el('div', { cls: 'num', text: textOf(TYPE_TEXT, d.docType) + '　' + d.lineCount + ' 項' + (hasMoney(d.docType) ? '　合計 ' + d.totalText + ' 元' : '') }))
           b.appendChild(el('div', { text: d.createdByName + '　' + whenText(d.createdAt) }))
+          // 備註的前 20 個字（切片 P29）：灰字；沒有就不畫
+          var preview = noteLine('', d.notePreview, 'muted')
+          if (preview !== null) b.appendChild(preview)
           // 老闆清單裡每一張都在等複核，不必每列都寫；店長要看得出哪一張被退回了
           if (!owner || d.status !== 'PENDING') b.appendChild(el('div', { cls: red ? 'bad' : undefined, text: statusWord(d) }))
           if (rejected && typeof d.rejectReason === 'string' && d.rejectReason !== '') {
@@ -4493,6 +4617,9 @@ var Core = (() => {
           var b = button('', function () { openDoc(d.docNo, recentBack) }, 'wide')
           b.appendChild(el('div', { cls: 'num', text: textOf(TYPE_TEXT, d.docType) + '　' + d.lineCount + ' 項' + (hasMoney(d.docType) ? '　合計 ' + d.totalText + ' 元' : '') }))
           b.appendChild(el('div', { text: d.createdByName + '　' + whenText(d.createdAt) }))
+          // 備註的前 20 個字（切片 P29）：灰字；沒有就不畫
+          var preview = noteLine('', d.notePreview, 'muted')
+          if (preview !== null) b.appendChild(preview)
           // 「11/3 通過」「11/3 退回」「11/3 撤回」；時間看不懂（或舊後端回的待複核單）就不畫
           var when = reviewedLine(d)
           if (when !== '') b.appendChild(el('div', { text: when }))
@@ -4555,12 +4682,17 @@ var Core = (() => {
             owner && d.status === 'PENDING' ? button('這張是重複的，退回', function () { rejectWithReason(r, duplicateRejectReason()) }, 'wide') : null,
           ]))
         }
+        // 備註（切片 P29）：單號那一區下面一行「備註：…」；沒有就不畫。備註文字放在自己的 span（dir="auto"、.note-text 做 bidi 隔離），
+        // 只用 textContent。這裡不呼叫 noteLine：showDoc 被整個抽出來測（test/better-use-5.test.js），只認得既有的那幾個函式
+        var noteText = typeof d.note === 'string' && d.note !== '' ? el('span', { cls: 'note-text', text: d.note }) : null
+        if (noteText !== null) noteText.setAttribute('dir', 'auto')
         // 摘要框：類型、合計（銷貨、進貨才有）、送單人、時間；單號與狀態放在最後
         parts.push(el('div', { cls: 'box' }, [
           el('div', { cls: 'num', text: textOf(TYPE_TEXT, d.docType) + (hasMoney(d.docType) ? '　合計 ' + d.totalText + ' 元' : '') }),
           el('div', { text: '送單人　' + d.createdByName }),
           el('div', { text: '時間　' + whenText(d.createdAt) }),
           el('div', { cls: 'muted', text: '單號 ' + d.docNo + '　狀態：' + statusWord(d) }),
+          noteText !== null ? el('div', {}, [el('span', { text: '備註：' }), noteText]) : null,
         ]))
         if (d.isOwnDoc && d.status === 'PENDING') {
           parts.push(el('p', { cls: 'muted', text: '這是你自己開的單。通過之後會記下「自己核的」。' }))
@@ -5463,6 +5595,8 @@ var Core = (() => {
         openWithStock('draft-stock', function () {
           form = numberLines({ kind: d.kind, requestId: d.requestId, lines: d.lines, sending: false, message: '', badLine: 0, attempt: 0 })
           form.sent = d.sent   // numberLines 把 sent 設成空的，所以放在它後面
+          // 備註（切片 P29）：restoreDraft 已經清理過、截到 Core.MAX_NOTE 個字
+          if (typeof d.note === 'string' && d.note !== '') form.note = d.note
           dropDraft()
           log({ step: 'draft-resumed', lines: d.lines.length })
           rerenderForm()
