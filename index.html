@@ -114,6 +114,12 @@
     .apart { margin-top: 24px; }
     /* 備註（切片 P29）：使用者打的字放在自己的 span（dir="auto"），方向自己判斷、不打亂旁邊的字 */
     .note-text { unicode-bidi: isolate; }
+    /* 找單（切片 P33）：輸入格與「找」同一列；格子吃掉剩下的寬度，375px 不水平捲動 */
+    .search { display: flex; align-items: flex-start; column-gap: var(--tap-gap); }
+    .search input { flex: 1 1 auto; width: auto; min-width: 0; margin-bottom: 0; }
+    .search button { flex: 0 0 auto; margin: 0; }
+    /* 常用備註（切片 P33）：一段一顆整列寬的鍵，太長用省略號，不換行、不水平捲動 */
+    button.note-chip { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; unicode-bidi: isolate; }
   </style>
 </head>
 <body>
@@ -151,6 +157,7 @@ var Core = (() => {
   // src/core/index.js
   var index_exports = {};
   __export(index_exports, {
+    BOOK_KINDS: () => BOOK_KINDS,
     DISPLAY_UNITS: () => DISPLAY_UNITS,
     MAX_NOTE: () => MAX_NOTE,
     MAX_NOTE_RAW: () => MAX_NOTE_RAW,
@@ -161,12 +168,15 @@ var Core = (() => {
     availableQty: () => availableQty,
     avgCostFenPerQuote: () => avgCostFenPerQuote,
     baseQtyOf: () => baseQtyOf,
+    belowCost: () => belowCost,
     bookAsOfCount: () => bookAsOfCount,
+    bookProblems: () => bookProblems,
     cleanNote: () => cleanNote,
     costEvents: () => costEvents,
     costOfOutflows: () => costOfOutflows,
     countAdjustTotals: () => countAdjustTotals,
     describeQty: () => describeQty,
+    earlierCostPending: () => earlierCostPending,
     farAbove: () => farAbove,
     farOff: () => farOff,
     fenToYuanText: () => fenToYuanText,
@@ -701,6 +711,14 @@ var Core = (() => {
       shortBase: e.shortBase
     }));
   }
+  function belowCost(amountFen, baseQty, value) {
+    if (value === null || typeof value !== "object") return null;
+    const qtyBase = value.qtyBase;
+    const totalCostFen = value.totalCostFen;
+    if (![amountFen, baseQty, qtyBase, totalCostFen].every((n) => Number.isSafeInteger(n))) return null;
+    if (baseQty <= 0 || qtyBase <= 0 || totalCostFen <= 0) return null;
+    return BigInt(amountFen) * BigInt(qtyBase) < BigInt(totalCostFen) * BigInt(baseQty);
+  }
   function avgCostFenPerQuote(value, product) {
     if (value.qtyBase <= 0) return 0;
     const quoteQty = isLooseTeaScale(product.stockUnitScale) ? value.qtyBase / BASE_PER_TAIJIN2 : value.qtyBase;
@@ -995,6 +1013,37 @@ var Core = (() => {
   function farOff(amountFen, refFen) {
     return farAbove(amountFen, refFen) || farAbove(refFen, amountFen);
   }
+  var COST_PAIRS = /* @__PURE__ */ new Map([
+    ["PURCHASE", ["SALE", "ADJUST"]],
+    ["SALE", ["PURCHASE"]],
+    ["ADJUST", ["PURCHASE"]]
+  ]);
+  var MAX_EARLIER = 5;
+  function earlierCostPending(head, lines, allHeads, allLines) {
+    const want = COST_PAIRS.get(head.docType);
+    if (want === void 0) return [];
+    const mine = stampMs3(head.createdAt);
+    if (mine === null) return [];
+    const codes = new Set(lines.map((l) => l.productCode));
+    const touching = /* @__PURE__ */ new Set();
+    for (const l of allLines) {
+      if (codes.has(l.productCode)) touching.add(l.docNo);
+    }
+    const hits = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const h of allHeads) {
+      if (want.indexOf(h.docType) === -1) continue;
+      if (h.status !== "PENDING" || h.docNo === head.docNo || seen.has(h.docNo)) continue;
+      const at = stampMs3(h.createdAt);
+      if (at === null) continue;
+      if (!(at < mine || at === mine && h.docNo < head.docNo)) continue;
+      if (!touching.has(h.docNo)) continue;
+      seen.add(h.docNo);
+      hits.push({ docNo: h.docNo, at });
+    }
+    hits.sort((a, b) => a.at !== b.at ? a.at - b.at : a.docNo < b.docNo ? -1 : a.docNo > b.docNo ? 1 : 0);
+    return hits.slice(0, MAX_EARLIER).map((x) => x.docNo);
+  }
 
   // src/core/note.js
   var MAX_NOTE = 50;
@@ -1005,6 +1054,44 @@ var Core = (() => {
   function cleanNote(v) {
     if (typeof v !== "string") return "";
     return v.replace(NOTE_BREAK, " ").replace(NOTE_JUNK, "").trim().replace(NOTE_LEAD, "");
+  }
+
+  // src/core/books.js
+  var BOOK_KINDS = ["posted-no-moves", "moves-not-posted", "line-count", "move-count"];
+  var MAX_PER_KIND = 20;
+  function countByDoc(rows) {
+    const out = /* @__PURE__ */ new Map();
+    for (const r of rows) out.set(r.docNo, (out.get(r.docNo) || 0) + 1);
+    return out;
+  }
+  function bookProblems(heads, lines, moves) {
+    const linesOf = countByDoc(lines);
+    const movesOf = countByDoc(moves);
+    const items = [];
+    const totals = {};
+    for (const k of BOOK_KINDS) totals[k] = 0;
+    function add(kind, docNo) {
+      totals[kind] += 1;
+      if (totals[kind] <= MAX_PER_KIND) items.push({ kind, docNo });
+    }
+    const posted = /* @__PURE__ */ new Set();
+    for (const h of heads) {
+      const nLines = linesOf.get(h.docNo) || 0;
+      if (h.lineCount !== nLines) add("line-count", h.docNo);
+      if (h.status !== "POSTED") continue;
+      posted.add(h.docNo);
+      const nMoves = movesOf.get(h.docNo) || 0;
+      if (nMoves === 0) {
+        add("posted-no-moves", h.docNo);
+        continue;
+      }
+      const want = h.docType === "MOVE" ? nLines * 2 : nLines;
+      if (nMoves !== want) add("move-count", h.docNo);
+    }
+    for (const docNo of movesOf.keys()) {
+      if (!posted.has(docNo)) add("moves-not-posted", docNo);
+    }
+    return { items, totals };
   }
   return __toCommonJS(index_exports);
 })();
@@ -1018,7 +1105,7 @@ var Core = (() => {
       var LIFF_ID = '2011787319-F5PDXDUn'
       var BACKEND_URL = 'https://script.google.com/macros/s/AKfycbxkqeQVGN4njMFKBdfqpyabeVYQ_jgncRt33sC00RcNPrsTMQf_6XSuUQbkwjAkI6V0Xg/exec'
       // 這一頁是照哪一版後端發布的（切片 P16）：發布時換成那一次打包的版本碼（12 碼小寫十六進位）。不是機密
-      var EXPECTED_BUILD = '06f700eedba6'
+      var EXPECTED_BUILD = 'b58c6b735ef6'
 
       // 任何「正在讀取」超過這麼久就給他一顆按鈕 —— 不可以是死路。
       // 第一次冒煙測試在實機上就遇過 liff.init() 永遠不 settle。
@@ -1777,13 +1864,25 @@ var Core = (() => {
         var out = []
         if (below) out.push('這張單有項目低於建議價（左邊有紅線的那幾項），請看過再決定。')
         if (far) out.push('這張單有金額跟平常差很多的項目，請看過再決定。')
+        // 切片 P33 九（後端 P30 四、二.4，只給老闆）：低於成本、代號重複，每一行各一句。N 是那一行的 seq（看不懂才用第幾行）
+        var nth = function (l, i) { return Number.isSafeInteger(l.seq) ? l.seq : i + 1 }
+        list.forEach(function (l, i) {
+          if (!!l && l.belowCost === true) out.push('第 ' + nth(l, i) + ' 項賣得比成本還低，請確認金額沒打錯。')
+        })
+        list.forEach(function (l, i) {
+          if (!!l && l.dupCode === true) out.push('第 ' + nth(l, i) + ' 項的商品代號在商品表重複了，請先修好商品表。')
+        })
         return out
       }
 
       // ---- 更好用五（切片 P28）要被檢查的決定：一樣是純函式（test/better-use-5.test.js 抽出來執行）----
 
-      /** 「通過」要不要按兩次：上方紅框有任何一行（reviewBanner 回的是陣列），或有重送提醒（sameAsText 不是 ''）。 */
+      /**
+       * 「通過」要不要按兩次：上方紅框有任何一行（reviewBanner 回的是陣列），或有重送提醒（sameAsText 不是 ''），
+       * 或（切片 P33 九）後端說同一種茶有更早還沒處理的單（doc.earlierPending 是非空陣列）。
+       */
       function needsSecondTap(d, lines) {
+        if (!!d && Array.isArray(d.earlierPending) && d.earlierPending.length > 0) return true
         return reviewBanner(lines).length > 0 || sameAsText(d) !== ''
       }
 
@@ -1837,6 +1936,9 @@ var Core = (() => {
         if (codes.length > 0) out.push('商品表找不到、但帳上還有庫存的代號：' + codes.join('、') + '。如果是改了代號，請改回原本的，或截圖給開發的人。')
         var names = pick(r.unitMismatchNames)
         if (names.length > 0) out.push('這幾種茶的單位比例跟以前的單對不上：' + names.join('、') + '。先別用它們記帳，截圖給開發的人。')
+        // 代號重複（切片 P33 九，後端 P30 二的 dupCodes）：規則同 orphanCodes
+        var dups = pick(r.dupCodes)
+        if (dups.length > 0) out.push('商品表有重複的代號：' + dups.join('、') + '，請修好商品表。')
         return out
       }
 
@@ -1879,6 +1981,103 @@ var Core = (() => {
           waiting: list.filter(function (d) { return !!d && d.status === 'PENDING' }),
           done: list.filter(function (d) { return !!d && d.status !== 'PENDING' }),
         }
+      }
+
+      // ---- 更好用六（切片 P33）要被檢查的決定：一樣是純函式（test/better-use-6.test.js 抽出來執行）----
+
+      /**
+       * 清單每一列的茶名那一行（後端 P31 一的 productNames、moreProducts）：名稱用「、」接，moreProducts 是 true 再加「 等」。
+       * productNames 不是陣列、或沒有任何不是空的字串 → ''（不畫）；不是字串的名稱跳過。字一律用 textContent 放。
+       */
+      function productNamesText(d) {
+        var names = d && Array.isArray(d.productNames) ? d.productNames.filter(function (x) { return typeof x === 'string' && x !== '' }) : []
+        if (names.length === 0) return ''
+        return names.join('、') + (d.moreProducts === true ? ' 等' : '')
+      }
+
+      /**
+       * 找單（切片 P33 二）按「找」之前：先用 Core.cleanNote 清（跟後端同一套），清過是空的 →「請打要找的字」；
+       * 清過超過 20 個字（Array.from）→「最多 20 個字」；其他回 { q: 清過的字 }。回 { error } 時不送出。
+       */
+      function searchQuery(raw) {
+        var q = typeof raw === 'string' && raw !== '' ? Core.cleanNote(raw) : ''
+        if (q === '') return { error: '請打要找的字' }
+        if (Array.from(q).length > 20) return { error: '最多 20 個字' }
+        return { q: q }
+      }
+
+      /**
+       * 找單的回應怎麼畫：後端沒有說 search: true（舊後端會忽略 q、回一般清單）→ 'old'（不畫回來的列）；
+       * 一張都沒有 → 'empty'；其他 → 'rows'。
+       */
+      function searchView(r) {
+        if (!r || r.search !== true) return 'old'
+        if (!Array.isArray(r.docs) || r.docs.length === 0) return 'empty'
+        return 'rows'
+      }
+
+      /**
+       * 常用備註（切片 P33 六）讀出來能用的那幾段（最多 5 個，新的在前）。raw = localStorage 的字串 { u, notes: [{ t, at }] }。
+       * 這支手機現在的使用者雜湊不是字串（含 null）、存的 u 跟它不同 → []（別人的不給看）。每一項：不是物件、t 不是字串、
+       * 清過之後是空的或超過 Core.MAX_NOTE 個字、at 不是數字、存了超過 30 天（剛好 30 天的留著）→ 丟掉。看不懂 → []。
+       */
+      function readRecentNotes(raw, userHash, nowMs) {
+        if (typeof userHash !== 'string' || userHash === '') return []
+        if (typeof raw !== 'string') return []
+        var data = null
+        try { data = JSON.parse(raw) } catch (e) { return [] }
+        if (!data || typeof data !== 'object' || data.u !== userHash || !Array.isArray(data.notes)) return []
+        var out = []
+        data.notes.forEach(function (n) {
+          if (!n || typeof n !== 'object' || typeof n.t !== 'string' || typeof n.at !== 'number' || !isFinite(n.at)) return
+          if (nowMs - n.at > 30 * 24 * 60 * 60 * 1000) return
+          var t = n.t !== '' ? Core.cleanNote(n.t) : ''
+          if (t === '' || Array.from(t).length > Core.MAX_NOTE) return
+          if (out.indexOf(t) === -1) out.push(t)
+        })
+        return out.slice(0, 5)
+      }
+
+      /**
+       * 送出成功之後要存的新內容（JSON 字串）：這一段放最前面（at = nowMs），後面接舊的裡面還能用的（每一項照 readRecentNotes
+       * 的規則檢查、保留原本的 at），去重、最多 5 個。舊的是別人的（u 不同）→ 不留，直接覆蓋。
+       * 使用者雜湊不是字串、備註清過是空的或太長 → null（不存）。
+       */
+      function addRecentNote(raw, userHash, note, nowMs) {
+        if (typeof userHash !== 'string' || userHash === '') return null
+        var t = typeof note === 'string' && note !== '' ? Core.cleanNote(note) : ''
+        if (t === '' || Array.from(t).length > Core.MAX_NOTE) return null
+        var data = null
+        try { data = JSON.parse(raw) } catch (e) { data = null }
+        var old = !!data && typeof data === 'object' && data.u === userHash && Array.isArray(data.notes) ? data.notes : []
+        var notes = [{ t: t, at: nowMs }]
+        old.forEach(function (n) {
+          if (notes.length >= 5) return
+          var ok = readRecentNotes(JSON.stringify({ u: userHash, notes: [n] }), userHash, nowMs)
+          if (ok.length === 1 && !notes.some(function (x) { return x.t === ok[0] })) notes.push({ t: ok[0], at: n.at })
+        })
+        return JSON.stringify({ u: userHash, notes: notes })
+      }
+
+      /**
+       * 銷貨表單的商品鍵（切片 P33 五）：order 是 saleProductOrder 的結果。recentCodes（最近賣過的代號，新的在前）裡、
+       * 而且 sellable(code) 是真的，依 recentCodes 的順序移到最前面；其他保持原來的先後（沒貨的照舊在最後）。
+       */
+      function recentFirst(order, recentCodes, sellable) {
+        var list = Array.isArray(order) ? order : []
+        var front = []
+        ;(Array.isArray(recentCodes) ? recentCodes : []).forEach(function (code) {
+          if (!sellable(code)) return
+          list.forEach(function (x) { if (x.code === code && front.indexOf(x) === -1) front.push(x) })
+        })
+        return front.concat(list.filter(function (x) { return front.indexOf(x) === -1 }))
+      }
+
+      /** 庫存頁每一種茶的順序（切片 P33 七）：穩定排序，isEmpty 是 true 的移到最後；其他（含 broken）保持原來的先後。 */
+      function stockOrder(items) {
+        var list = Array.isArray(items) ? items : []
+        var empty = list.filter(function (it) { return !!it && it.isEmpty === true })
+        return list.filter(function (it) { return empty.indexOf(it) === -1 }).concat(empty)
       }
 
       /**
@@ -2524,7 +2723,8 @@ var Core = (() => {
         if (r.items.length === 0) {
           parts.push(el('p', { text: '還沒有任何商品。請在試算表的「商品」分頁加一列。' }))
         }
-        r.items.forEach(function (it) {
+        // 沒貨的排最後（切片 P33 七，stockOrder）：其他的（含記錄壞掉的）照後端的順序
+        stockOrder(r.items).forEach(function (it) {
           // 這種茶的庫存記錄壞了（切片 P7 C）：後端沒給任何數量，只講「有問題」，其他茶照常
           if (it.broken === true) {
             parts.push(el('div', { cls: 'item below' }, [
@@ -3022,6 +3222,7 @@ var Core = (() => {
           clearTimeout(watchdog)
           log({ step: 'submitted', ok: r.ok, code: r.code })
           if (r.ok && reopenClash(r, mine.reopenOf)) return showReopenClash(mine.reopenOf)
+          if (r.ok) rememberNote(mine.note)   // 常用備註（切片 P33 六）：送出成功才記
           if (r.ok) { rememberLineUnits(checked.lines); return showSubmitted(r) }
           // 登入過期：重新登入會整頁換掉，先把這張留一份（切片 P20；saveDraft 同步、不丟例外，handledAuth 一定接著跑）
           if (r.code === 'A2') saveDraft(form)
@@ -3147,15 +3348,20 @@ var Core = (() => {
 
       /** 送出成功。**列的是後端實際存下的明細**，不是表單上的內容（F7）。 */
       function showSubmitted(r) {
+        // 備註（切片 P33 四）：form 清掉之前先取出清過的備註。就地寫：這個函式被整個抽出來測（test/better-use-5.test.js）
+        var sentNote = !!form && typeof form.note === 'string' && form.note !== '' ? Core.cleanNote(form.note) : ''
         form = null
         session.stockAt = null   // 剛送了單：可賣量變了，下一張表單要重新拿庫存
         dropDraft()   // 任何一張送出成功都刪草稿（切片 P20）：不理那個框、自己重打一張送出之後，不會再「接著填」送出第二張
         var type = r.docType
+        var sentSpan = sentNote !== '' ? el('span', { cls: 'note-text', text: sentNote }) : null
+        if (sentSpan !== null) sentSpan.setAttribute('dir', 'auto')
         var parts = [
           el('div', { cls: 'box' }, [
             el('p', { cls: 'good', text: '送出了。' }),
             el('p', { text: '單號' }),
             el('p', { cls: 'num', text: r.docNo }),
+            sentSpan !== null ? el('p', {}, [el('span', { text: '備註：' }), sentSpan]) : null,
           ]),
         ]
         // 連續記帳（切片 P28）：「再開一張…」緊接在單號下面，不用捲到底
@@ -3290,6 +3496,62 @@ var Core = (() => {
         } catch (e) {}
       }
 
+      // ---- 手機上記住「最近賣過的茶」（切片 P33 五）----
+      //
+      // 只存商品代號（最多 4 個、新的在前、不重複），沒有數量、金額、客人。只在銷貨送出成功時更新。
+      // 讀回來的不是陣列、或有任何一個不是 1～40 字的字串 → 當成沒有（這支手機上任何人都改得到那一格）。
+
+      var RECENT_SALE_KEY = 'poyuntea-recent-sale-products'
+
+      function readRecentSale() {
+        try {
+          var a = JSON.parse(localStorage.getItem(RECENT_SALE_KEY) || '[]')
+          if (!Array.isArray(a)) return []
+          if (!a.every(function (c) { return typeof c === 'string' && c.length >= 1 && c.length <= 40 })) return []
+          return a.slice(0, 4)
+        } catch (e) {
+          return []
+        }
+      }
+
+      function rememberSaleProducts(lines) {
+        try {
+          var out = []
+          lines.forEach(function (l) {
+            var c = l.productCode
+            if (typeof c === 'string' && c.length >= 1 && c.length <= 40 && out.indexOf(c) === -1) out.push(c)
+          })
+          readRecentSale().forEach(function (c) { if (out.indexOf(c) === -1) out.push(c) })
+          localStorage.setItem(RECENT_SALE_KEY, JSON.stringify(out.slice(0, 4)))
+        } catch (e) {}
+      }
+
+      // ---- 常用備註（切片 P33 六）----
+      //
+      // 常客的稱呼，所以綁人（session.userHash，跟草稿同一個）、30 天就丟、有「清掉常用備註」。規則都在 readRecentNotes、
+      // addRecentNote（純函式）；這一層只負責讀寫 localStorage 與 try/catch（壞掉、讀不到都當成沒有）。**不記錄**（log 不碰備註）。
+
+      var RECENT_NOTES_KEY = 'poyuntea-recent-notes'
+
+      function recentNotes() {
+        try {
+          return readRecentNotes(localStorage.getItem(RECENT_NOTES_KEY), session.userHash, Date.now())
+        } catch (e) {
+          return []
+        }
+      }
+
+      function rememberNote(note) {
+        try {
+          var next = addRecentNote(localStorage.getItem(RECENT_NOTES_KEY), session.userHash, note, Date.now())
+          if (next !== null) localStorage.setItem(RECENT_NOTES_KEY, next)
+        } catch (e) {}
+      }
+
+      function forgetNotes() {
+        try { localStorage.removeItem(RECENT_NOTES_KEY) } catch (e) {}
+      }
+
       /** 這個商品現在可以賣的格子。可賣 ≤ 0 的格子不出現（S12）。 */
       function sellableBins(code) {
         var bins = session.stock && session.stock.byBin ? session.stock.byBin : []
@@ -3387,7 +3649,8 @@ var Core = (() => {
           ln.gift = false
           autoAmount(ln)
           renderSaleForm(true)   // 格子與單位那兩排跟著商品變
-        }, saleProductOrder(usableItems(), sellableBins))   // 沒貨的茶排最後（切片 P15），只有銷貨表單
+          // 沒貨的茶排最後（切片 P15），只有銷貨表單；最近賣過、現在有貨的排最前面（切片 P33 五）
+        }, recentFirst(saleProductOrder(usableItems(), sellableBins), readRecentSale(), function (code) { return sellableBins(code).length > 0 }))
 
         if (!product) {
           box.appendChild(el('label', { text: '從哪一格拿' }))
@@ -3622,6 +3885,8 @@ var Core = (() => {
           clearTimeout(watchdog)
           log({ step: 'sale-submitted', ok: r.ok, code: r.code })
           if (r.ok && reopenClash(r, mine.reopenOf)) return showReopenClash(mine.reopenOf)
+          // 常用備註、最近賣過的茶（切片 P33 五、六）：送出成功才記，用送出的那幾項
+          if (r.ok) { rememberNote(mine.note); rememberSaleProducts(checked.lines) }
           if (r.ok) return showSubmitted(r)
           // 登入過期：重新登入會整頁換掉，先把這張留一份（切片 P20；saveDraft 同步、不丟例外，handledAuth 一定接著跑）
           if (r.code === 'A2') saveDraft(form)
@@ -3894,6 +4159,27 @@ var Core = (() => {
         })
         var box = el('div', {}, [label, input, hint])
         box.setAttribute('data-note', '1')
+        // 常用備註（切片 P33 六）：提示字下面一段一顆鍵（送出中不畫）。按一下只換輸入格與 f.note、重畫提示、edited()；
+        // 不存草稿、開表單時不自動填。最後一顆「清掉常用備註」刪掉那個鍵，這一排跟著消失
+        var chips = f.sending === true ? [] : recentNotes()
+        if (chips.length > 0) {
+          var row = el('div', { cls: 'note-chips' })
+          chips.forEach(function (t) {
+            var chip = button(t, function () {
+              input.value = t
+              f.note = t
+              paint()
+              edited()
+            }, 'wide note-chip')
+            chip.setAttribute('dir', 'auto')
+            row.appendChild(chip)
+          })
+          row.appendChild(button('清掉常用備註', function () {
+            forgetNotes()
+            if (row.parentNode) row.parentNode.removeChild(row)
+          }))
+          box.appendChild(row)
+        }
         return box
       }
 
@@ -3992,6 +4278,7 @@ var Core = (() => {
           clearTimeout(watchdog)
           log({ step: action + '-done', ok: r.ok, code: r.code })
           if (r.ok && reopenClash(r, mine.reopenOf)) return showReopenClash(mine.reopenOf)
+          if (r.ok) rememberNote(mine.note)   // 常用備註（切片 P33 六）：送出成功才記
           if (r.ok) { rememberLineUnits(checked.lines); return showSubmitted(r) }
           // 登入過期：重新登入會整頁換掉，先把這張留一份（切片 P20；saveDraft 同步、不丟例外，handledAuth 一定接著跑）
           if (r.code === 'A2') saveDraft(form)
@@ -4551,6 +4838,8 @@ var Core = (() => {
         clearTimeout(watchdog)
         var owner = isOwner()
         var parts = [el('h2', { text: owner ? '待複核（' + r.docs.length + ' 張）' : '我送出的單' })]
+        // 找單（切片 P33 二）：店長的「我送出的單」標題下面（老闆的在「最近處理過的單」）
+        if (!owner) parts.push(searchBox(function () { openList() }))
         if (r.docs.length === 0) {
           parts.push(el('p', { text: owner ? '現在沒有等你複核的單。' : '你最近沒有送出任何單。' }))
         } else {
@@ -4571,6 +4860,9 @@ var Core = (() => {
           // 第一行大字：類型與項數（銷貨、進貨加合計）；單號小字放最後
           b.appendChild(el('div', { cls: 'num', text: textOf(TYPE_TEXT, d.docType) + '　' + d.lineCount + ' 項' + (hasMoney(d.docType) ? '　合計 ' + d.totalText + ' 元' : '') }))
           b.appendChild(el('div', { text: d.createdByName + '　' + whenText(d.createdAt) }))
+          // 這張有哪些茶（切片 P33 一）：灰字；沒有就不畫
+          var teas = productNamesText(d)
+          if (teas !== '') b.appendChild(namesRow(teas))
           // 備註的前 20 個字（切片 P29）：灰字；沒有就不畫
           var preview = noteLine('', d.notePreview, 'muted')
           if (preview !== null) b.appendChild(preview)
@@ -4612,11 +4904,16 @@ var Core = (() => {
       function showRecent(r) {
         clearTimeout(watchdog)
         var parts = [el('h2', { text: '最近處理過的單（最多 30 張）' })]
+        // 找單（切片 P33 二）：老闆在這裡找全部的單
+        parts.push(searchBox(function () { openRecent() }))
         parts.push(el('p', { cls: r.docs.length === 0 ? undefined : 'muted', text: r.docs.length === 0 ? '最近沒有處理過的單。' : '點一張單看內容。' }))
         r.docs.forEach(function (d) {
           var b = button('', function () { openDoc(d.docNo, recentBack) }, 'wide')
           b.appendChild(el('div', { cls: 'num', text: textOf(TYPE_TEXT, d.docType) + '　' + d.lineCount + ' 項' + (hasMoney(d.docType) ? '　合計 ' + d.totalText + ' 元' : '') }))
           b.appendChild(el('div', { text: d.createdByName + '　' + whenText(d.createdAt) }))
+          // 這張有哪些茶（切片 P33 一）：灰字；沒有就不畫
+          var teas = productNamesText(d)
+          if (teas !== '') b.appendChild(namesRow(teas))
           // 備註的前 20 個字（切片 P29）：灰字；沒有就不畫
           var preview = noteLine('', d.notePreview, 'muted')
           if (preview !== null) b.appendChild(preview)
@@ -4627,6 +4924,112 @@ var Core = (() => {
           parts.push(b)
         })
         parts.push(listButton())
+        parts.push(homeButton())
+        render(parts)
+      }
+
+      /** 清單一列的茶名那一行（切片 P33 一）：灰字，字放在自己的元素（dir="auto"、.note-text），只用 textContent。 */
+      function namesRow(text) {
+        var row = el('div', { cls: 'muted note-text', text: text })
+        row.setAttribute('dir', 'auto')
+        return row
+      }
+
+      // ---- 找單（切片 P33 二；後端 P31 二的 listDocs q）----
+      //
+      // 找的字只在記憶體：**不進** log()、不存 localStorage／sessionStorage。送出前一律經過 searchQuery（清過、20 個字以內）；
+      // 畫回應前一律經過 searchView（舊後端沒有 search: true → 不畫回來的列）。字一律 textContent。
+
+      /** 標題下面那一塊：輸入格＋「找」（按 Enter 也算）＋一行灰字；不能找時下面一行紅字。again：「再找一次」回到的那份清單。 */
+      function searchBox(again) {
+        var input = el('input')
+        input.type = 'search'
+        input.setAttribute('autocomplete', 'off')
+        input.setAttribute('enterkeyhint', 'search')
+        input.setAttribute('aria-label', '要找的字')
+        input.setAttribute('dir', 'auto')
+        var problem = el('p', { cls: 'bad', text: '' })
+        problem.hidden = true
+        var go = button('找', function () { find() }, 'primary')
+        function find() {
+          if (go.disabled) return
+          var s = searchQuery(input.value)
+          if (s.error) {
+            problem.textContent = s.error
+            problem.hidden = false
+            return
+          }
+          problem.hidden = true
+          go.disabled = true   // 送出中：不重複送
+          input.disabled = true
+          runSearch(s.q, again, true)
+        }
+        input.addEventListener('keydown', function (e) {
+          if (e.key !== 'Enter') return
+          e.preventDefault()
+          find()
+        })
+        return el('div', {}, [
+          el('div', { cls: 'search' }, [input, go]),
+          el('p', { cls: 'muted', text: '打備註裡的字或單號，最多 20 個字' }),
+          problem,
+        ])
+      }
+
+      /** 送出找單。stay：留在原本的清單（按鈕已經停用），不換成「正在讀取」。 */
+      function runSearch(q, again, stay) {
+        var t = begin()
+        if (stay) armWatchdog()
+        else showLoading()
+        var retry = function () { return button('再找一次', function () { again() }) }
+        call('listDocs', { q: q }).then(function (r) {
+          if (!current(t)) return
+          log({ step: 'search', ok: r.ok, code: r.code })
+          if (r.ok) return showSearch(r, q, again)
+          clearTimeout(watchdog)
+          if (handledAuth(r)) return
+          showError(messageOf(r), [retry(), homeButton()])
+        }).catch(netFailed(t, null, [retry(), homeButton()]))
+      }
+
+      /** 找單的結果。每一列跟原清單同一種畫法（類型、項數、合計、送單人、茶名、備註、狀態、單號），點進去開那張單。 */
+      function showSearch(r, q, again) {
+        clearTimeout(watchdog)
+        var word = el('span', { cls: 'note-text', text: q })
+        word.setAttribute('dir', 'auto')
+        var parts = [el('h2', {}, [el('span', { text: '找「' }), word, el('span', { text: '」的結果' })])]
+        var how = searchView(r)
+        if (how === 'old') {
+          parts.push(el('p', { text: '後端還不是最新版，暫時不能找單。' }))
+          parts.push(homeButton())
+          return render(parts)
+        }
+        if (how === 'empty') parts.push(el('p', { text: '沒有找到' }))
+        if (r.more === true) parts.push(el('p', { cls: 'muted', text: '只列出最新的 30 張，打多一點字可以縮小範圍。' }))
+        var owner = isOwner()
+        // 從結果打開的單據，下面那顆返回鍵：用同一個字再找一次（字只在這個閉包裡）
+        var backToHits = function () { return button('回找的結果', function () { runSearch(q, again, false) }) }
+        ;(how === 'rows' ? r.docs : []).forEach(function (row) {
+          // 店長被老闆退回、還沒照著重開的：紅框、列原因（跟「我送出的單」一樣）；自己撤回的不畫紅框
+          var refused = !owner && row.status === 'REJECTED' && row.withdrawn !== true
+          var alarm = refused && stillRejected(row)
+          var b = button('', function () { openDoc(row.docNo, backToHits) }, alarm ? 'wide rejected' : 'wide')
+          b.appendChild(el('div', { cls: 'num', text: textOf(TYPE_TEXT, row.docType) + '　' + row.lineCount + ' 項' + (hasMoney(row.docType) ? '　合計 ' + row.totalText + ' 元' : '') }))
+          b.appendChild(el('div', { text: row.createdByName + '　' + whenText(row.createdAt) }))
+          var teas = productNamesText(row)
+          if (teas !== '') b.appendChild(namesRow(teas))
+          var hint = noteLine('', row.notePreview, 'muted')
+          if (hint !== null) b.appendChild(hint)
+          b.appendChild(el('div', { cls: alarm ? 'bad' : undefined, text: statusWord(row) }))
+          if (refused && typeof row.rejectReason === 'string' && row.rejectReason !== '') {
+            b.appendChild(el('div', { cls: alarm ? 'bad' : undefined, text: '原因：' + row.rejectReason }))
+          }
+          var done = reviewedLine(row)
+          if (done !== '') b.appendChild(el('div', { text: done }))
+          b.appendChild(el('div', { cls: 'muted', text: row.docNo }))
+          parts.push(b)
+        })
+        parts.push(button('再找一次', function () { again() }))
         parts.push(homeButton())
         render(parts)
       }
@@ -4720,6 +5123,16 @@ var Core = (() => {
           }
         }
         var sale = d.docType === 'SALE'
+        // 同一種茶有更早還沒處理的單（切片 P33 九，後端 P30 一；只有老闆、等複核的單）：明細上面紅框。
+        // 就地寫（showDoc 被整個抽出來測）：只畫長得像單號的（looksLikeDocNo），最多 5 個
+        var older = owner && d.status === 'PENDING' && Array.isArray(d.earlierPending) ? d.earlierPending.filter(looksLikeDocNo) : []
+        if (older.length > 0) {
+          parts.push(el('div', { cls: 'box alert' }, [
+            el('p', { cls: 'bad', text: '這張之前還有 ' + older.length + ' 張同一種茶的單還沒處理：' }),
+            el('p', { text: older.slice(0, 5).join('、') }),
+            el('p', { text: '先處理舊的，成本才會對。' }),
+          ]))
+        }
         // 低於建議價、金額跟平常差很多（切片 P24）：同一個紅框，有幾種就幾行（reviewBanner）
         var banner = owner ? reviewBanner(r.lines) : []
         if (banner.length > 0) {
@@ -4778,6 +5191,25 @@ var Core = (() => {
               }, 10000)
             }, repair === null ? 'primary' : undefined)
             reviewButtons.push(pass, back)
+            // 通過之後自動帶出的這一張（切片 P33 八，opts.hold）：「通過」「退回」先停用 1.5 秒，從第一次畫好之後才開始算
+            // （requestAnimationFrame）。計時綁在這個畫面的票上：畫面換掉了就不動；時間到只把還是「請先看一下這張」的字改回來
+            // （P28 的「確定通過？」不蓋掉）。就地寫：showDoc 被整個抽出來測，不呼叫新的 helper
+            if (opts && opts.hold === true) {
+              pass.disabled = true
+              back.disabled = true
+              pass.textContent = '請先看一下這張'
+              back.textContent = '請先看一下這張'
+              var holdTicket = view
+              requestAnimationFrame(function () {
+                setTimeout(function () {
+                  if (!current(holdTicket)) return
+                  pass.disabled = false
+                  back.disabled = false
+                  if (pass.textContent === '請先看一下這張') pass.textContent = PASS_TEXT[d.docType]
+                  if (back.textContent === '請先看一下這張') back.textContent = '退回'
+                }, 1500)
+              })
+            }
             parts.push(pass)
             parts.push(armNote)
             // 通過與退回拉開（切片 P24）：「退回」自己一列、前面至少 24px，免得按錯；按鍵樣子不變
@@ -4989,7 +5421,8 @@ var Core = (() => {
         var d = r.doc
         sendReview('approve', r, approveParams(r), {
           busy: function (text) { pass.textContent = text },
-          done: function () { showReviewed(d.docNo, 'POSTED', d.docType) },
+          // 切片 P33 八：還有待複核的單 → 直接帶出下一張（afterApprove）；沒有、或讀不到 → 照舊的成功畫面
+          done: function () { afterApprove(d, function () { showReviewed(d.docNo, 'POSTED', d.docType) }) },
           timeoutText: '等太久了，不確定有沒有通過。請按「重新打開這張單」看狀態；再按一次「通過」也安全，不會重複入庫。',
           netText: '連線斷了，不確定有沒有通過。請按「重新打開這張單」看狀態；再按一次「通過」也安全，不會重複入庫。',
           // 自動再試過一次還是拿不到鎖：留在這張單，提示放在最上面
@@ -5143,8 +5576,40 @@ var Core = (() => {
       }
 
       /**
+       * 通過成功之後（切片 P33 八，只接在 review() 的 done）：還有待複核的單 → 直接畫那一張的單子畫面，最上面一個框
+       * 「上一張 … 已通過。」（這支手機第一次通過再加那一句）。**一律重新 getDoc**，不用背景抓好的那一份：剛通過的那張
+       * 可能改了均價，舊的那份會少了「低於成本」「更早的單」的提醒。自動帶出的那一張用 hold：「通過」「退回」先停用 1.5 秒。
+       * 清單不是 ok、沒有下一張、getDoc 不是 ok、連線失敗或逾時、登入類的代碼 → fallback()（照舊的成功畫面），
+       * 這幾條路都不碰「第一次」的記號（approveNoteFirstTime 只在 getDoc 成功之後才叫）。每一個回應都先看票。
+       */
+      function afterApprove(d, fallback) {
+        // 先清，在任何讀取之前（原本是 showReviewed 做的）：剛通過，庫存與均價都變了
+        session.stockAt = null
+        prefetched = null
+        var t = view
+        call('listDocs').then(function (lr) {
+          if (!current(t)) return
+          if (!lr || lr.ok !== true) return fallback()
+          var next = nextDocOf(lr.docs, d.docNo)
+          if (next === null) return fallback()
+          return call('getDoc', { docNo: next.docNo }).then(function (res) {
+            if (!current(t)) return
+            if (!res || res.ok !== true) return fallback()
+            var notice = '上一張 ' + d.docNo + ' 已通過。'
+            if (approveNoteFirstTime(function () { return localStorage })) notice += '通過之後就不能改了。發現錯了，請截圖給開發的人，不要自己改試算表。'
+            docBack = null
+            begin()
+            showDoc(res, '', { notice: notice, hold: true })
+          })
+        }).catch(function () {
+          if (current(t)) fallback()
+        })
+      }
+
+      /**
        * 「看下一張」：成功（或已處理好）的畫面出現時，背景叫一次 listDocs，取剩下最舊的一張。
-       * **不自動跳**過去（連按會把沒看過的單也通過）。使用者已經離開這個畫面，晚到的回應丟掉。
+       * 通過之後的自動帶出在 afterApprove（2026-11-16 使用者選了直接帶出，以 1.5 秒停用防連按）；這裡給退回、
+       * 已處理好、最後一張通過之後的成功畫面用，按了才過去。使用者已經離開這個畫面，晚到的回應丟掉。
        */
       function nextSlot(doneDocNo) {
         var t = view
@@ -5172,7 +5637,8 @@ var Core = (() => {
 
       // ---- 看下一張：背景先把下一張抓好（切片 P17）----
       //
-      // 只放一筆。老闆還是要自己按（不自動跳）；按的時候如果已經抓好而且不到 2 分鐘，直接用，不再等一次 getDoc。
+      // 只放一筆。這裡是老闆自己按「看下一張」（通過之後的自動帶出另外走 afterApprove：2026-11-16 使用者選了直接帶出，
+      // 以 1.5 秒停用防連按，而且一律重新 getDoc、不用這一筆）；按的時候如果已經抓好而且不到 2 分鐘，直接用，不再等一次 getDoc。
       // 內容過期也安全：通過時帶的是 updatedAt，單子被改過會得到 D3，既有流程會重抓最新內容並提示。
 
       var prefetched = null
@@ -5473,6 +5939,12 @@ var Core = (() => {
           // 第一行大字：哪一天、賺多少（切片 P15）；營收、成本、送單人放小字；單號最後
           b.appendChild(el('div', { cls: 'num', text: mdText(d.reviewedDate) + '　利潤 ' + d.profitText + ' 元' }))
           b.appendChild(el('div', { cls: 'muted small', text: '營收 ' + d.revenueText + ' 元　成本 ' + d.costText + ' 元　' + d.createdByName }))
+          // 備註的前 20 個字（切片 P33 三，後端 P31 三的 notePreview）：單號上面一行灰字，字放在自己的 span；沒有就不畫
+          if (typeof d.notePreview === 'string' && d.notePreview !== '') {
+            var memo = el('span', { cls: 'note-text', text: d.notePreview })
+            memo.setAttribute('dir', 'auto')
+            b.appendChild(el('div', { cls: 'muted small' }, [memo]))
+          }
           b.appendChild(el('div', { cls: 'muted small', text: d.docNo }))
           docKids.push(b)
         })
